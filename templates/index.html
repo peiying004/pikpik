@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iOS GPS 模擬器</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Top bar */
+        .top-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            background: #16213e;
+            border-bottom: 1px solid #0f3460;
+            z-index: 1000;
+        }
+        .top-bar h1 {
+            font-size: 16px;
+            white-space: nowrap;
+            color: #e94560;
+        }
+        .search-box {
+            flex: 1;
+            display: flex;
+            gap: 8px;
+        }
+        .search-box input {
+            flex: 1;
+            padding: 8px 14px;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 14px;
+            outline: none;
+        }
+        .search-box input:focus { border-color: #e94560; }
+        .search-box input::placeholder { color: #666; }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-search { background: #e94560; color: white; }
+        .btn-search:hover { background: #c73652; }
+        .btn-stop { background: #333; color: #e94560; border: 1px solid #e94560; }
+        .btn-stop:hover { background: #e94560; color: white; }
+
+        /* Search results dropdown */
+        .search-results {
+            display: none;
+            position: absolute;
+            top: 52px;
+            left: 160px;
+            right: 16px;
+            max-height: 250px;
+            overflow-y: auto;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            z-index: 1001;
+        }
+        .search-results.active { display: block; }
+        .search-result-item {
+            padding: 10px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid #0f3460;
+            font-size: 13px;
+        }
+        .search-result-item:hover { background: #1a1a2e; }
+        .search-result-item:last-child { border-bottom: none; }
+
+        /* Map */
+        #map { flex: 1; z-index: 1; }
+        /* 地圖函式庫載入失敗時的可見提示。沿用同一個容器，版面佔位不變。 */
+        #map.map-unavailable {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 24px;
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.6;
+            color: #f0a500;
+            background: #12203c;
+            border: 1px dashed #f0a500;
+            cursor: help;
+        }
+
+        /* Info bar */
+        .info-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 16px;
+            background: #16213e;
+            border-top: 1px solid #0f3460;
+            font-size: 12px;
+            color: #888;
+            z-index: 1000;
+        }
+        .coords { font-family: monospace; color: #e94560; }
+        .device-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #555;
+        }
+        .status-dot.connected { background: #4ecca3; }
+
+        /* Joystick container */
+        .joystick-container {
+            position: absolute;
+            bottom: 60px;
+            right: 20px;
+            width: 140px;
+            height: 140px;
+            z-index: 999;
+            background: rgba(22, 33, 62, 0.7);
+            border-radius: 50%;
+            /* 不參與瀏覽器預設觸控手勢：否則搖桿上的拖曳會同時被解讀為頁面
+               捲動或地圖手勢，搖桿跟不上手指或立即彈回。 */
+            touch-action: none;
+            /* 這裡刻意不使用 backdrop-filter：搖桿驅動的地圖跟隨每 100ms 重繪
+               一次，模糊區域每次都要重算，形成每秒十次的全區重繪並造成黏滯。 */
+        }
+        /* 搖桿函式庫載入失敗時的可見提示。沿用同一個容器，尺寸與位置不變。 */
+        .joystick-container.joystick-unavailable {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: #f0a500;
+            border: 1px dashed #f0a500;
+            cursor: help;
+        }
+
+        /* 速度控制。原本是右側兩個獨立的絕對定位方塊，現在是控制面板速度區段
+           內的兩列；標籤、滑桿、數值三者橫向排列以節省面板高度。 */
+        .speed-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 2px 8px;
+        }
+        .speed-row + .speed-row { margin-top: 8px; }
+        .speed-row label {
+            font-size: 11px;
+            color: #888;
+        }
+        .speed-row input[type="range"] {
+            grid-column: 1 / 2;
+            width: 100%;
+            accent-color: #e94560;
+        }
+        .speed-value {
+            grid-column: 2 / 3;
+            grid-row: 2 / 3;
+            font-size: 11px;
+            color: #e94560;
+            font-family: monospace;
+            min-width: 52px;
+            text-align: right;
+        }
+
+        /* 面板內的按鈕。原本 .set-btn-container 的絕對定位已移除 —— 這些按鈕
+           現在是控制面板區段的子元素。 */
+        .btn-set {
+            flex: 1 1 auto;
+            padding: 9px 12px;
+            background: #e94560;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .btn-set:hover { background: #c73652; }
+        .btn-center {
+            flex: 0 0 auto;
+            padding: 9px 12px;
+            background: rgba(15, 52, 96, 0.6);
+            color: #eee;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .btn-center:hover { background: rgba(15, 52, 96, 0.9); }
+
+        /* 停用狀態。地圖不可用時，行為觸及地圖或標記物件的控制項會被停用；
+           停用的按鈕不會觸發 click，因此也不會送出任何請求。 */
+        .btn-set:disabled,
+        .btn-center:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        /* ── 統一控制面板 ──
+           所有浮在地圖上的控制項（搖桿除外）都收在這裡。刻意不使用 HTML 的
+           form 元素：送出全走非同步請求，form 只會帶來按 Enter 觸發提交而
+           清空座標清單的風險。 */
+        .control-panel {
+            position: absolute;
+            top: 65px;
+            left: 20px;
+            z-index: 999;
+            width: 250px;
+            display: flex;
+            flex-direction: column;
+            background: rgba(22, 33, 62, 0.92);
+            border: 1px solid #0f3460;
+            border-radius: 10px;
+            /* 高度以視窗可用區為上限：扣掉 top:65px 起點、底部狀態列約 29px、
+               再留 16px 間距。超出時由 .panel-body 內部捲動，絕不溢出畫面或
+               裁切區段 —— 原本各容器用固定像素偏移堆疊，視窗一矮就互相重疊。 */
+            max-height: calc(100vh - 110px);
+            overflow: hidden;           /* 讓內部捲動保持在圓角邊界內 */
+        }
+        .panel-header {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #0f3460;
+        }
+        .panel-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #e94560;
+            letter-spacing: 0.04em;
+        }
+        .panel-toggle {
+            flex: 0 0 auto;
+            padding: 3px 10px;
+            background: rgba(15, 52, 96, 0.6);
+            color: #bbb;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .panel-toggle:hover { background: rgba(15, 52, 96, 0.95); color: #eee; }
+        .panel-body {
+            flex: 1 1 auto;
+            min-height: 0;              /* 沒有這行，flex 子項不會縮到可捲動 */
+            overflow-y: auto;
+            padding: 10px 12px 12px;
+        }
+        /* 收起用 display:none 隱藏，元件仍留在文件中 —— 腳本在啟動時要讀速度
+           控制項推導標籤，移動輪詢也會持續寫入進度與裝置警示。若收起等於從文件
+           移除，這些取用會取到空值並在執行期拋錯。 */
+        .control-panel.collapsed .panel-body { display: none; }
+        .control-panel.collapsed .panel-header { border-bottom: none; }
+        .panel-section + .panel-section {
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid #24304f;
+        }
+        .section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #888;
+            margin-bottom: 8px;
+            letter-spacing: 0.04em;
+        }
+        .section-row {
+            display: flex;
+            gap: 8px;
+        }
+        .section-col {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* 多座標依序移動。原本是左側一個獨立的絕對定位面板，現在是控制面板的
+           一個區段。 */
+        .coord-hint {
+            display: block;
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        #coordInput {
+            width: 100%;
+            height: 76px;
+            resize: vertical;
+            padding: 8px 10px;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #eee;
+            font-family: monospace;
+            font-size: 12px;
+            outline: none;
+        }
+        #coordInput:focus { border-color: #4ecca3; }
+        #coordInput::placeholder { color: #555; }
+        .btn-block {
+            display: block;
+            width: 100%;
+            margin-top: 8px;
+        }
+        .coord-error {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #e94560;
+            line-height: 1.4;
+            min-height: 0;
+        }
+        .walk-progress {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #4ecca3;
+            font-family: monospace;
+        }
+        .device-warning {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #f0a500;
+            line-height: 1.4;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <h1>GPS 模擬器</h1>
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="搜尋地點... (例如: 台北101)" />
+            <button class="btn btn-search" onclick="searchLocation()">搜尋</button>
+            <button class="btn btn-stop" onclick="stopSimulation()">停止</button>
+        </div>
+        <div class="search-results" id="searchResults"></div>
+    </div>
+
+    <div id="map"></div>
+
+    <!-- 統一控制面板：四個區段依實際使用流程排列 -->
+    <div class="control-panel" id="controlPanel">
+        <div class="panel-header">
+            <span class="panel-title">控制面板</span>
+            <button class="panel-toggle" id="btnPanelToggle" onclick="togglePanel()">收起</button>
+        </div>
+        <div class="panel-body" id="panelBody">
+            <section class="panel-section">
+                <h2 class="section-title">位置</h2>
+                <div class="section-row">
+                    <button class="btn-set" id="btnSetLocation" onclick="setCurrentLocation()">設定 GPS 位置</button>
+                    <button class="btn-center" id="btnCenterMarker" onclick="centerOnMarker()">置中標記</button>
+                </div>
+            </section>
+
+            <section class="panel-section">
+                <h2 class="section-title">速度</h2>
+                <div class="speed-row">
+                    <label for="walkSpeedSlider">自動移動 (km/h)</label>
+                    <!-- 滑桿的 value 是前端這一側的唯一來源：顯示文字與 JavaScript
+                         變數都在初始化時由 updateWalkSpeed() 從這個值推導。 -->
+                    <input type="range" id="walkSpeedSlider" min="5" max="40" value="18" oninput="updateWalkSpeed()" />
+                    <div class="speed-value" id="walkSpeedValue"></div>
+                </div>
+                <div class="speed-row">
+                    <label for="speedSlider">搖桿 (km/h)</label>
+                    <input type="range" id="speedSlider" min="5" max="200" value="36" oninput="updateSpeed()" />
+                    <div class="speed-value" id="speedValue"></div>
+                </div>
+            </section>
+
+            <section class="panel-section">
+                <h2 class="section-title">多座標依序移動</h2>
+                <label class="coord-hint" for="coordInput">每行一組：緯度, 經度</label>
+                <textarea id="coordInput" spellcheck="false"
+placeholder="25.033964, 121.564468
+25.041000, 121.565000
+25.047924, 121.517081"></textarea>
+                <button class="btn-set btn-block" id="btnMultiWalk" style="background:#4ecca3;" onclick="startMultiWalk()">開始移動</button>
+                <div class="coord-error" id="coordError"></div>
+                <div class="walk-progress" id="walkProgress"></div>
+                <div class="device-warning" id="deviceWarning"></div>
+            </section>
+
+            <section class="panel-section">
+                <h2 class="section-title">單點沿路</h2>
+                <div class="section-col">
+                    <button class="btn-set" id="btnWalkTo" style="background:#4ecca3;" onclick="walkToMarker()">沿路走到這裡</button>
+                    <button class="btn-set" id="btnStopWalk" style="background:#e94560;display:none;" onclick="stopAutoWalk()">停止移動</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <div class="joystick-container" id="joystickZone"></div>
+
+    <div class="info-bar">
+        <div>
+            Lat: <span class="coords" id="latDisplay">--</span> &nbsp;
+            Lng: <span class="coords" id="lngDisplay">--</span>
+        </div>
+        <div class="device-status">
+            <span id="deviceText">未連接裝置</span>
+            <span class="status-dot" id="statusDot"></span>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- 這個套件沒有提供 .min.js；它的 package.json 指向的是 dist/nipplejs.js。
+         引用 .min.js 會得到 404，導致 nipplejs 未定義、建立搖桿時拋錯，
+         並讓這之後的所有頂層敘述都不執行。版本維持 0.10.2 不變。 -->
+    <script src="https://unpkg.com/nipplejs@0.10.2/dist/nipplejs.js"></script>
+    <script>
+        // State
+        var markerLat = 25.033964;
+        var markerLng = 121.564468;
+        var joystickInterval = null;
+        var joystickVector = { x: 0, y: 0 };
+        var destLat = null, destLng = null;
+        var destMarker = null;
+        var routePolyline = null;
+        var routeCoords = [];
+        var walkInterval = null;
+        var moveSpeed;                  // 初始化時由搖桿速度滑桿推導
+        var walkSpeedKmh;               // 初始化時由自動移動速度滑桿推導
+
+        // Multi-coordinate walk state
+        var multiCoords = [];
+        var multiPolyline = null;
+        var multiMarkerLayer = null;
+        var multiWalkActive = false;
+
+        // === 只依賴 DOM 的初始化 ===
+        // 刻意排在任何第三方函式庫初始化之前。這些東西不需要地圖、也不需要搖桿
+        // 函式庫，所以不該被函式庫的載入失敗拖累 —— 先前它們被放在腳本最後一行，
+        // 結果搖桿函式庫 404 讓速度標籤空白、座標讀數留在佔位符號、搜尋框
+        // Enter 鍵完全沒反應，三個看似無關的症狀全出自同一個錯誤。
+        updateDisplay();
+        updateWalkSpeed();
+        updateSpeed();
+
+        document.getElementById('searchInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') searchLocation();
+        });
+
+        // 結果列表的點擊以委派處理，座標從資料屬性取得。與上面的 Enter 鍵綁定同樣
+        // 放在只依賴 DOM 的初始化區塊，函式庫失效時搜尋與選取仍然可用。
+        document.getElementById('searchResults').addEventListener('click', function(e) {
+            var item = e.target.closest('.search-result-item');
+            if (!item || item.dataset.lat === undefined) return;
+            selectResult(item.dataset.lat, item.dataset.lng);
+        });
+
+        // Close search results on outside click
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.search-box') && !e.target.closest('.search-results')) {
+                document.getElementById('searchResults').classList.remove('active');
+            }
+        });
+
+        // === 搖桿：可用性檢查與建立 ===
+        // 刻意排在地圖初始化之前，而且整段不取用地圖函式庫的任何物件。若排在
+        // 地圖初始化之後，地圖函式庫載入失敗就會讓這段守衛連同它要顯示的提示
+        // 一起不執行，使用者只剩一個沒有任何說明的空白角落 —— 那正是先前
+        // nipplejs 404 時的症狀，只是換成另一個函式庫。
+        // 地圖相依的手勢傳播阻擋不在這裡，留在地圖初始化成功的分支內。
+        const joystickZone = document.getElementById('joystickZone');
+        var joystick = null;
+
+        function showJoystickUnavailable(reason) {
+            joystickZone.classList.add('joystick-unavailable');
+            joystickZone.textContent = '搖桿不可用';
+            joystickZone.title = reason;
+            console.error('[搖桿] ' + reason + ' —— 頁面其餘功能不受影響');
+        }
+
+        // 搖桿的移動是對地圖與標記物件下手，沒有地圖就算搖桿轉了也沒有任何作用，
+        // 所以搖桿可用與否同時取決於兩個函式庫。這裡只用 typeof 判斷 —— typeof
+        // 對未宣告的識別字是安全的，正是「不取用該函式庫」該有的形式。
+        if (typeof L === 'undefined') {
+            showJoystickUnavailable('地圖函式庫 Leaflet 未載入，搖桿沒有可移動的地圖與標記');
+        } else if (typeof nipplejs === 'undefined') {
+            showJoystickUnavailable('搖桿元件 nipplejs 未載入，請檢查網路或該函式庫的引用路徑');
+        } else {
+            try {
+                joystick = nipplejs.create({
+                    zone: joystickZone,
+                    mode: 'static',
+                    position: { left: '50%', top: '50%' },
+                    color: '#e94560',
+                    size: 120
+                });
+            } catch (err) {
+                joystick = null;
+                showJoystickUnavailable('搖桿建立失敗：' + err.message);
+            }
+        }
+
+        if (joystick) {
+            joystick.on('move', function(evt, data) {
+                if (data.vector) {
+                    joystickVector = { x: data.vector.x, y: data.vector.y };
+                }
+                if (!joystickInterval) {
+                    joystickInterval = setInterval(moveByJoystick, 100);
+                }
+            });
+
+            joystick.on('end', function() {
+                joystickVector = { x: 0, y: 0 };
+                if (joystickInterval) {
+                    clearInterval(joystickInterval);
+                    joystickInterval = null;
+                }
+            });
+        }
+
+        // === 地圖：可用性檢查與初始化 ===
+        // 地圖物件與標記物件被其後數十處引用，沒有可退而求其次的替代路徑。函式庫
+        // 不在、或建立過程拋錯時，就在地圖區域說清楚哪些功能不可用並跳過所有地圖
+        // 相依的初始化 —— 而不是讓一次頂層中斷散成一連串執行期的空值存取。
+        var map = null;
+        var marker = null;
+        var destIcon = null;
+        var mapReady = false;
+
+        function showMapUnavailable(reason) {
+            var mapEl = document.getElementById('map');
+            mapEl.classList.add('map-unavailable');
+            mapEl.textContent = '地圖不可用：地圖、標記與移動功能皆無法使用';
+            mapEl.title = reason;
+            console.error('[地圖] ' + reason + ' —— 座標讀數、速度標籤與地點搜尋不受影響');
+        }
+
+        if (typeof L === 'undefined') {
+            showMapUnavailable('地圖函式庫 Leaflet 未載入，請檢查網路或該函式庫的引用路徑');
+        } else {
+            try {
+                map = L.map('map', { zoomControl: true }).setView([markerLat, markerLng], 16);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap',
+                    maxZoom: 19
+                }).addTo(map);
+
+                // Custom red marker
+                const markerIcon = L.divIcon({
+                    html: '<div style="width:16px;height:16px;background:#e94560;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                    className: ''
+                });
+
+                marker = L.marker([markerLat, markerLng], { icon: markerIcon, draggable: true }).addTo(map);
+
+                marker.on('dragend', function(e) {
+                    const pos = e.target.getLatLng();
+                    markerLat = pos.lat;
+                    markerLng = pos.lng;
+                    updateDisplay();
+                });
+
+                // Click on map to set destination (green marker)
+                destIcon = L.divIcon({
+                    html: '<div style="width:16px;height:16px;background:#4ecca3;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                    className: ''
+                });
+                map.on('click', function(e) {
+                    destLat = e.latlng.lat;
+                    destLng = e.latlng.lng;
+                    if (destMarker) {
+                        destMarker.setLatLng([destLat, destLng]);
+                    } else {
+                        destMarker = L.marker([destLat, destLng], { icon: destIcon, draggable: true }).addTo(map);
+                        destMarker.on('dragend', function(ev) {
+                            const pos = ev.target.getLatLng();
+                            destLat = pos.lat;
+                            destLng = pos.lng;
+                        });
+                    }
+                });
+
+                // 搖桿與控制面板都是浮在地圖之上的兄弟節點，不是地圖的子元素，因此地圖
+                // 的手勢處理器仍會收到落在它們範圍內的事件。用 Leaflet 自己的工具函式
+                // 阻擋傳播，才能涵蓋它內部監聽的完整事件集合。
+                // 阻擋範圍套用在整個面板上，所以在座標輸入區裡拖曳選字不會平移地圖，
+                // 在面板內滾輪捲動也不會縮放地圖。
+                L.DomEvent.disableClickPropagation(joystickZone);
+                L.DomEvent.disableScrollPropagation(joystickZone);
+
+                const controlPanel = document.getElementById('controlPanel');
+                L.DomEvent.disableClickPropagation(controlPanel);
+                L.DomEvent.disableScrollPropagation(controlPanel);
+
+                mapReady = true;
+            } catch (err) {
+                // 函式庫在但建立失敗（例如載到損壞的版本）。搖桿此時已經建立，
+                // 但它沒有可移動的對象，所以一併收掉並改顯示不可用。
+                mapReady = false;
+                if (joystick) {
+                    try { joystick.destroy(); } catch (e) {}
+                    joystick = null;
+                    showJoystickUnavailable('地圖建立失敗，搖桿沒有可移動的地圖與標記');
+                }
+                showMapUnavailable('地圖建立失敗：' + err.message);
+            }
+        }
+
+        // 地圖不可用時，停用行為會觸及地圖或標記物件的控制項。這份清單可以列舉
+        // 窮盡，判準是「按下去會不會用到 map 或 marker」—— 日後新增控制項時依
+        // 同一個判準決定是否納入。停用的按鈕不觸發 click，因此不送出任何請求。
+        // 地點搜尋不在此列：送出查詢與列出結果都不碰地圖，選取結果的地圖相依部分
+        // 由 selectResult 自己守衛。
+        if (!mapReady) {
+            ['btnSetLocation', 'btnCenterMarker', 'btnMultiWalk', 'btnStopWalk', 'btnWalkTo']
+                .forEach(function(id) {
+                    var ctl = document.getElementById(id);
+                    ctl.disabled = true;
+                    ctl.title = '地圖不可用，此功能無法使用';
+                });
+        }
+
+        function moveByJoystick() {
+            // Convert meters to approximate lat/lng delta
+            const metersPerDegLat = 111320;
+            const metersPerDegLng = 111320 * Math.cos(markerLat * Math.PI / 180);
+
+            const dlat = (joystickVector.y * moveSpeed) / metersPerDegLat;
+            const dlng = (joystickVector.x * moveSpeed) / metersPerDegLng;
+
+            markerLat += dlat;
+            markerLng += dlng;
+            marker.setLatLng([markerLat, markerLng]);
+            // 無動畫：更新頻率本來就是每 100ms 一次，動畫沒有視覺意義，但帶動畫
+            // 的平移會在前一次動畫結束前被新的取代，動畫狀態持續堆疊 —— 表現就是
+            // 搖桿黏滯、放開後標記還在飄。
+            map.setView([markerLat, markerLng], map.getZoom(), { animate: false });
+            updateDisplay();
+
+            // Auto-send location while moving
+            sendLocation(markerLat, markerLng);
+        }
+
+        function updateSpeed() {
+            const kmh = parseInt(document.getElementById('speedSlider').value);
+            moveSpeed = kmh / 36; // convert km/h to m/step (10 steps/sec)
+            document.getElementById('speedValue').textContent = kmh + ' km/h';
+        }
+
+        // 收起／展開控制面板。狀態刻意不持久化：重新載入回到展開。
+        function togglePanel() {
+            var panel = document.getElementById('controlPanel');
+            var collapsed = panel.classList.toggle('collapsed');
+            document.getElementById('btnPanelToggle').textContent = collapsed ? '展開' : '收起';
+        }
+
+        function updateDisplay() {
+            document.getElementById('latDisplay').textContent = markerLat.toFixed(6);
+            document.getElementById('lngDisplay').textContent = markerLng.toFixed(6);
+        }
+
+        // 顯示名稱來自第三方地名服務，以文字內容寫入而非拼進標記字串；座標改以資料
+        // 屬性攜帶，由結果列表的委派處理器讀取，不再拼進行內事件屬性。
+        function makeResultItem(label, lat, lng) {
+            var item = document.createElement('div');
+            item.className = 'search-result-item';
+            item.textContent = label;
+            if (lat !== null && lat !== undefined) {
+                item.dataset.lat = lat;
+                item.dataset.lng = lng;
+            }
+            return item;
+        }
+
+        // Search location using Nominatim
+        async function searchLocation() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) return;
+
+            try {
+                const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`);
+                const results = await resp.json();
+                const container = document.getElementById('searchResults');
+
+                container.replaceChildren();
+
+                if (results.length === 0) {
+                    container.appendChild(makeResultItem('找不到結果', null, null));
+                    container.classList.add('active');
+                    return;
+                }
+
+                results.forEach(function(r) {
+                    container.appendChild(makeResultItem(r.display_name, r.lat, r.lon));
+                });
+                container.classList.add('active');
+            } catch (err) {
+                console.error('Search error:', err);
+            }
+        }
+
+        function selectResult(lat, lng) {
+            markerLat = Number(lat);
+            markerLng = Number(lng);
+            // 地圖不可用時只更新記憶體中的座標與座標讀數：標記與地圖視野沒有可更新
+            // 的對象，但搜尋本身不碰地圖，不該跟著失效。
+            if (mapReady) {
+                marker.setLatLng([markerLat, markerLng]);
+                map.setView([markerLat, markerLng], 16);
+            }
+            updateDisplay();
+            document.getElementById('searchResults').classList.remove('active');
+        }
+
+        // 搜尋框 Enter 鍵與點擊外部關閉結果的綁定已移到腳本開頭的
+        // 「只依賴 DOM 的初始化」區塊，確保函式庫失效時仍然生效。
+
+        // Send location to device (throttled: skip if previous request still in flight)
+        var sendingLocation = false;
+        var pendingLocation = null;
+
+        function sendLocation(lat, lng) {
+            pendingLocation = { lat, lng };
+            if (!sendingLocation) {
+                _flushLocation();
+            }
+        }
+
+        async function _flushLocation() {
+            if (!pendingLocation || sendingLocation) return;
+            sendingLocation = true;
+            var loc = pendingLocation;
+            pendingLocation = null;
+            try {
+                var resp = await fetch('/api/location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(loc)
+                });
+                var data = await resp.json();
+                var dot = document.getElementById('statusDot');
+                var text = document.getElementById('deviceText');
+                if (data.device) {
+                    dot.classList.add('connected');
+                    text.textContent = '裝置已連接';
+                } else {
+                    dot.classList.remove('connected');
+                    // 後端在失敗時回傳的欄位名是 error（與走路路徑的 device_error
+                    // 同一組命名）。先前這裡讀的 message 後端從未回傳，於是不論
+                    // tunneld 沒開、裝置拔掉還是逾時，使用者一律只看到固定文字。
+                    text.textContent = data.error || '未連接裝置';
+                }
+            } catch (err) {
+                console.error('Send error:', err);
+            }
+            sendingLocation = false;
+            // If a new location came in while we were sending, send it now
+            if (pendingLocation) {
+                _flushLocation();
+            }
+        }
+
+        function setCurrentLocation() {
+            sendLocation(markerLat, markerLng);
+        }
+
+        async function stopSimulation() {
+            try {
+                await fetch('/api/stop', { method: 'POST' });
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('deviceText').textContent = '已停止';
+            } catch (err) {
+                console.error('Stop error:', err);
+            }
+        }
+
+        function centerOnMarker() {
+            map.setView([markerLat, markerLng], map.getZoom());
+        }
+
+        // === Auto Walk Feature (server-side) ===
+        function updateWalkSpeed() {
+            walkSpeedKmh = parseInt(document.getElementById('walkSpeedSlider').value);
+            document.getElementById('walkSpeedValue').textContent = walkSpeedKmh + ' km/h';
+        }
+
+        // === Multi-coordinate sequential walk ===
+
+        // 每行一組「緯度, 經度」。空白行與行首行尾空白忽略；行號回報的是輸入的
+        // 實際行號（含空白行），使用者才對得上自己貼進去的內容。
+        function parseCoordInput(text) {
+            var lines = text.split('\n');
+            var coords = [];
+
+            for (var i = 0; i < lines.length; i++) {
+                var raw = lines[i].trim();
+                if (raw === '') continue;
+
+                var lineNo = i + 1;
+                var parts = raw.split(',');
+                if (parts.length !== 2) {
+                    return { error: '第 ' + lineNo + ' 行不是有效的座標組，需為「緯度, 經度」兩個以逗號分隔的數值' };
+                }
+
+                var latText = parts[0].trim();
+                var lngText = parts[1].trim();
+                var lat = Number(latText);
+                var lng = Number(lngText);
+
+                if (latText === '' || lngText === '' || !isFinite(lat) || !isFinite(lng)) {
+                    return { error: '第 ' + lineNo + ' 行不是有效的座標組，「' + raw + '」無法解析為兩個數值' };
+                }
+                if (lat < -90 || lat > 90) {
+                    return { error: '第 ' + lineNo + ' 行的緯度 ' + latText + ' 超出 -90 至 90' };
+                }
+                if (lng < -180 || lng > 180) {
+                    return { error: '第 ' + lineNo + ' 行的經度 ' + lngText + ' 超出 -180 至 180' };
+                }
+
+                coords.push([lat, lng]);
+            }
+
+            if (coords.length < 2) {
+                return { error: '至少需要兩個座標' };
+            }
+            return { coords: coords };
+        }
+
+        function numberedIcon(n) {
+            return L.divIcon({
+                html: '<div style="width:22px;height:22px;line-height:20px;text-align:center;'
+                    + 'background:#4ecca3;color:#12203c;border:2px solid white;border-radius:50%;'
+                    + 'font-size:12px;font-weight:700;box-shadow:0 0 6px rgba(0,0,0,0.5);">' + n + '</div>',
+                iconSize: [22, 22],
+                iconAnchor: [11, 11],
+                className: ''
+            });
+        }
+
+        function drawMultiRoute(coords) {
+            clearMultiRoute();
+
+            multiMarkerLayer = L.layerGroup();
+            coords.forEach(function(c, i) {
+                L.marker(c, { icon: numberedIcon(i + 1) }).addTo(multiMarkerLayer);
+            });
+            multiMarkerLayer.addTo(map);
+
+            multiPolyline = L.polyline(coords, { color: '#4ecca3', weight: 3, opacity: 0.85, dashArray: '6 6' }).addTo(map);
+            map.fitBounds(multiPolyline.getBounds(), { padding: [50, 50] });
+        }
+
+        function clearMultiRoute() {
+            if (multiMarkerLayer) { map.removeLayer(multiMarkerLayer); multiMarkerLayer = null; }
+            if (multiPolyline) { map.removeLayer(multiPolyline); multiPolyline = null; }
+        }
+
+        function setMultiWalkButtonIdle() {
+            var btn = document.getElementById('btnMultiWalk');
+            btn.disabled = false;
+            btn.textContent = '開始移動';
+            btn.style.display = 'block';
+        }
+
+        async function startMultiWalk() {
+            var errEl = document.getElementById('coordError');
+            var parsed = parseCoordInput(document.getElementById('coordInput').value);
+            if (parsed.error) {
+                errEl.textContent = parsed.error;
+                return;
+            }
+            errEl.textContent = '';
+
+            multiCoords = parsed.coords;
+            drawMultiRoute(multiCoords);
+
+            var btn = document.getElementById('btnMultiWalk');
+            btn.disabled = true;
+            btn.textContent = '啟動中...';
+
+            try {
+                // 座標清單原封不動送出。後端行走器本來就在相鄰點之間依時速插值、
+                // 以首點為起點、跨過中途點不停頓，所以不呼叫外部路線規劃服務，
+                // 也不在這裡展開成密集折線 —— 那會讓落點被吸附而失去精準度。
+                var resp = await fetch('/api/walk/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ route: multiCoords, speed_kmh: walkSpeedKmh })
+                });
+                var data = await resp.json();
+
+                if (data.error) {
+                    errEl.textContent = '無法開始移動: ' + data.error;
+                    clearMultiRoute();
+                    setMultiWalkButtonIdle();
+                    return;
+                }
+
+                multiWalkActive = true;
+                setMultiWalkButtonIdle();
+                btn.style.display = 'none';
+                document.getElementById('btnStopWalk').style.display = 'block';
+                startWalkPolling();
+            } catch (err) {
+                console.error('多座標移動錯誤:', err);
+                errEl.textContent = '無法開始移動: ' + err.message;
+                clearMultiRoute();
+                setMultiWalkButtonIdle();
+            }
+        }
+
+        // 移動中的標記位置是伺服器端的純數學插值，與裝置寫入成敗無關。沒有這段
+        // 顯示，裝置早已凍結時介面仍會顯示一切正常。
+        function updateDeviceWarning(st) {
+            var warnEl = document.getElementById('deviceWarning');
+            var dot = document.getElementById('statusDot');
+            var text = document.getElementById('deviceText');
+
+            if (st.device_ok === false) {
+                warnEl.textContent = '⚠ 裝置寫入失敗：' + (st.device_error || '未知原因');
+                dot.classList.remove('connected');
+                text.textContent = '裝置寫入失敗';
+            } else if (st.device_ok === true) {
+                warnEl.textContent = '';
+                dot.classList.add('connected');
+                text.textContent = '裝置已連接';
+            } else {
+                // 第三態：這一輪還沒有任何寫入結果。只有讀到明確的成功才點亮圓點，
+                // 否則走路剛開始的第一次輪詢就會在毫無根據的情況下宣稱裝置已連接。
+                warnEl.textContent = '';
+                dot.classList.remove('connected');
+                text.textContent = '等待裝置回應…';
+            }
+        }
+
+        async function walkToMarker() {
+            if (destLat === null || destLng === null) {
+                alert('請先點擊地圖放置綠色目的地標記');
+                return;
+            }
+
+            var fromLat = markerLat, fromLng = markerLng;
+            var toLat = destLat, toLng = destLng;
+
+            var btn = document.getElementById('btnWalkTo');
+            btn.textContent = '路線規劃中...';
+            btn.style.background = '#888';
+
+            try {
+                // 1. Get route from OSRM
+                var url = 'https://router.project-osrm.org/route/v1/driving/' + fromLng + ',' + fromLat + ';' + toLng + ',' + toLat + '?overview=full&geometries=geojson';
+                var resp = await fetch(url);
+                var data = await resp.json();
+
+                if (data.code !== 'Ok' || !data.routes || !data.routes.length) {
+                    alert('找不到路線');
+                    btn.textContent = '沿路走到這裡';
+                    btn.style.background = '#4ecca3';
+                    return;
+                }
+
+                var coords = data.routes[0].geometry.coordinates;
+                routeCoords = coords.map(function(c) { return [c[1], c[0]]; });
+
+                // Draw route on map
+                if (routePolyline) map.removeLayer(routePolyline);
+                routePolyline = L.polyline(routeCoords, { color: '#4ecca3', weight: 4, opacity: 0.8 }).addTo(map);
+                map.fitBounds(routePolyline.getBounds(), { padding: [50, 50] });
+
+                // 2. Send route to server to start walking
+                var walkResp = await fetch('/api/walk/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ route: routeCoords, speed_kmh: walkSpeedKmh })
+                });
+                var walkData = await walkResp.json();
+
+                if (walkData.error) {
+                    alert('無法開始移動: ' + walkData.error);
+                    btn.textContent = '沿路走到這裡';
+                    btn.style.background = '#4ecca3';
+                    return;
+                }
+
+                // 3. Start polling server for position updates
+                btn.style.display = 'none';
+                document.getElementById('btnStopWalk').style.display = 'block';
+                startWalkPolling();
+
+            } catch (err) {
+                console.error('路線錯誤:', err);
+                alert('無法取得路線: ' + err.message);
+                btn.textContent = '沿路走到這裡';
+                btn.style.background = '#4ecca3';
+            }
+        }
+
+        function startWalkPolling() {
+            if (walkInterval) clearInterval(walkInterval);
+            walkInterval = setInterval(async function() {
+                try {
+                    var resp = await fetch('/api/walk/status');
+                    var st = await resp.json();
+                    updateDeviceWarning(st);
+                    if (st.active) {
+                        markerLat = st.lat;
+                        markerLng = st.lng;
+                        marker.setLatLng([markerLat, markerLng]);
+                        map.panTo([markerLat, markerLng], { animate: true, duration: 0.3 });
+                        updateDisplay();
+                        if (multiWalkActive) {
+                            // st.progress 是已抵達的座標索引（0 起算），顯示為第 N 點。
+                            document.getElementById('walkProgress').textContent =
+                                '第 ' + (st.progress + 1) + ' 點／共 ' + st.total + ' 點';
+                        }
+                    } else {
+                        // 走路自然結束。終點狀態存在的時間短於 500ms 的輪詢週期，
+                        // 只在 active 為真時更新進度，使用者幾乎永遠看不到終點那一格
+                        // ——「第 3 點／共 3 點」會在被讀到之前就變成未移動。這裡在
+                        // 收尾之前先用最後一次讀到的狀態把進度補上並保留。
+                        // multiWalkActive 為否表示不是多座標移動（單點沿路沒有進度
+                        // 顯示），或使用者已經按過停止（那時進度該清空）。
+                        var finalProgress = (multiWalkActive && st.total)
+                            ? '第 ' + (st.progress + 1) + ' 點／共 ' + st.total + ' 點'
+                            : '';
+                        stopAutoWalk({ keepProgress: finalProgress });
+                    }
+                } catch (err) {
+                    console.error('Poll error:', err);
+                }
+            }, 500);
+        }
+
+        // options.keepProgress：收尾後要保留在進度欄位的文字。走路自然結束時由
+        // 輪詢帶入終點索引；使用者按下停止時不帶（按鈕的 onclick 不傳參數），
+        // 進度與路線一併清除。
+        async function stopAutoWalk(options) {
+            var keepProgress = (options && options.keepProgress) || '';
+
+            if (walkInterval) {
+                clearInterval(walkInterval);
+                walkInterval = null;
+            }
+            try { await fetch('/api/walk/stop', { method: 'POST' }); } catch(e) {}
+
+            document.getElementById('btnStopWalk').style.display = 'none';
+            document.getElementById('btnWalkTo').style.display = 'block';
+            document.getElementById('btnWalkTo').textContent = '沿路走到這裡';
+            document.getElementById('btnWalkTo').style.background = '#4ecca3';
+
+            if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
+            if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+            routeCoords = [];
+            destLat = null;
+            destLng = null;
+
+            // 多座標移動的收尾：清除編號標記與折線、進度與警示，並讓開始移動鍵復原。
+            clearMultiRoute();
+            multiCoords = [];
+            multiWalkActive = false;
+            document.getElementById('walkProgress').textContent = keepProgress;
+            document.getElementById('deviceWarning').textContent = '';
+            setMultiWalkButtonIdle();
+        }
+
+        // 座標讀數與速度標籤的初始化在腳本開頭就已完成（見「只依賴 DOM 的初始化」），
+        // 這裡刻意不再重複呼叫 —— 放在最後才是先前那個 bug 的成因。
+    </script>
+</body>
+</html>
