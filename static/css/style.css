@@ -1,0 +1,345 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Top bar */
+.top-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    z-index: 1000;
+}
+.top-bar h1 {
+    font-size: 16px;
+    white-space: nowrap;
+    color: #e94560;
+}
+.search-box {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+}
+.search-box input {
+    flex: 1;
+    padding: 8px 14px;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #eee;
+    font-size: 14px;
+    outline: none;
+}
+.search-box input:focus { border-color: #e94560; }
+.search-box input::placeholder { color: #666; }
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+.btn-search { background: #e94560; color: white; }
+.btn-search:hover { background: #c73652; }
+.btn-stop { background: #333; color: #e94560; border: 1px solid #e94560; }
+.btn-stop:hover { background: #e94560; color: white; }
+
+/* Search results dropdown */
+.search-results {
+    display: none;
+    position: absolute;
+    top: 52px;
+    left: 160px;
+    right: 16px;
+    max-height: 250px;
+    overflow-y: auto;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    z-index: 1001;
+}
+.search-results.active { display: block; }
+.search-result-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #0f3460;
+    font-size: 13px;
+}
+.search-result-item:hover { background: #1a1a2e; }
+.search-result-item:last-child { border-bottom: none; }
+
+/* Map */
+#map { flex: 1; z-index: 1; }
+/* 地圖函式庫載入失敗時的可見提示。沿用同一個容器，版面佔位不變。 */
+#map.map-unavailable {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.6;
+    color: #f0a500;
+    background: #12203c;
+    border: 1px dashed #f0a500;
+    cursor: help;
+}
+
+/* Info bar */
+.info-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: #16213e;
+    border-top: 1px solid #0f3460;
+    font-size: 12px;
+    color: #888;
+    z-index: 1000;
+}
+.coords { font-family: monospace; color: #e94560; }
+.device-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+}
+.status-dot.connected { background: #4ecca3; }
+
+/* Joystick container */
+.joystick-container {
+    position: absolute;
+    bottom: 60px;
+    right: 20px;
+    width: 140px;
+    height: 140px;
+    z-index: 999;
+    background: rgba(22, 33, 62, 0.7);
+    border-radius: 50%;
+    /* 不參與瀏覽器預設觸控手勢：否則搖桿上的拖曳會同時被解讀為頁面
+       捲動或地圖手勢，搖桿跟不上手指或立即彈回。 */
+    touch-action: none;
+    /* 這裡刻意不使用 backdrop-filter：搖桿驅動的地圖跟隨每 100ms 重繪
+       一次，模糊區域每次都要重算，形成每秒十次的全區重繪並造成黏滯。 */
+}
+/* 搖桿函式庫載入失敗時的可見提示。沿用同一個容器，尺寸與位置不變。 */
+.joystick-container.joystick-unavailable {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: #f0a500;
+    border: 1px dashed #f0a500;
+    cursor: help;
+}
+
+/* 速度控制。原本是右側兩個獨立的絕對定位方塊，現在是控制面板速度區段
+   內的兩列；標籤、滑桿、數值三者橫向排列以節省面板高度。 */
+.speed-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 2px 8px;
+}
+.speed-row + .speed-row { margin-top: 8px; }
+.speed-row label {
+    font-size: 11px;
+    color: #888;
+}
+.speed-row input[type="range"] {
+    grid-column: 1 / 2;
+    width: 100%;
+    accent-color: #e94560;
+}
+.speed-value {
+    grid-column: 2 / 3;
+    grid-row: 2 / 3;
+    font-size: 11px;
+    color: #e94560;
+    font-family: monospace;
+    min-width: 52px;
+    text-align: right;
+}
+
+/* 面板內的按鈕。原本 .set-btn-container 的絕對定位已移除 —— 這些按鈕
+   現在是控制面板區段的子元素。 */
+.btn-set {
+    flex: 1 1 auto;
+    padding: 9px 12px;
+    background: #e94560;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.btn-set:hover { background: #c73652; }
+.btn-center {
+    flex: 0 0 auto;
+    padding: 9px 12px;
+    background: rgba(15, 52, 96, 0.6);
+    color: #eee;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+}
+.btn-center:hover { background: rgba(15, 52, 96, 0.9); }
+
+/* 停用狀態。地圖不可用時，行為觸及地圖或標記物件的控制項會被停用；
+   停用的按鈕不會觸發 click，因此也不會送出任何請求。 */
+.btn-set:disabled,
+.btn-center:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* ── 統一控制面板 ──
+   所有浮在地圖上的控制項（搖桿除外）都收在這裡。刻意不使用 HTML 的
+   form 元素：送出全走非同步請求，form 只會帶來按 Enter 觸發提交而
+   清空座標清單的風險。 */
+.control-panel {
+    position: absolute;
+    top: 65px;
+    left: 20px;
+    z-index: 999;
+    width: 250px;
+    display: flex;
+    flex-direction: column;
+    background: rgba(22, 33, 62, 0.92);
+    border: 1px solid #0f3460;
+    border-radius: 10px;
+    /* 高度以視窗可用區為上限：扣掉 top:65px 起點、底部狀態列約 29px、
+       再留 16px 間距。超出時由 .panel-body 內部捲動，絕不溢出畫面或
+       裁切區段 —— 原本各容器用固定像素偏移堆疊，視窗一矮就互相重疊。 */
+    max-height: calc(100vh - 110px);
+    overflow: hidden;           /* 讓內部捲動保持在圓角邊界內 */
+}
+.panel-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #0f3460;
+}
+.panel-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #e94560;
+    letter-spacing: 0.04em;
+}
+.panel-toggle {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    background: rgba(15, 52, 96, 0.6);
+    color: #bbb;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+}
+.panel-toggle:hover { background: rgba(15, 52, 96, 0.95); color: #eee; }
+.panel-body {
+    flex: 1 1 auto;
+    min-height: 0;              /* 沒有這行，flex 子項不會縮到可捲動 */
+    overflow-y: auto;
+    padding: 10px 12px 12px;
+}
+/* 收起用 display:none 隱藏，元件仍留在文件中 —— 腳本在啟動時要讀速度
+   控制項推導標籤，移動輪詢也會持續寫入進度與裝置警示。若收起等於從文件
+   移除，這些取用會取到空值並在執行期拋錯。 */
+.control-panel.collapsed .panel-body { display: none; }
+.control-panel.collapsed .panel-header { border-bottom: none; }
+.panel-section + .panel-section {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #24304f;
+}
+.section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+    margin-bottom: 8px;
+    letter-spacing: 0.04em;
+}
+.section-row {
+    display: flex;
+    gap: 8px;
+}
+.section-col {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 多座標依序移動。原本是左側一個獨立的絕對定位面板，現在是控制面板的
+   一個區段。 */
+.coord-hint {
+    display: block;
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 6px;
+}
+#coordInput {
+    width: 100%;
+    height: 76px;
+    resize: vertical;
+    padding: 8px 10px;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #eee;
+    font-family: monospace;
+    font-size: 12px;
+    outline: none;
+}
+#coordInput:focus { border-color: #4ecca3; }
+#coordInput::placeholder { color: #555; }
+.btn-block {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+}
+.coord-error {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #e94560;
+    line-height: 1.4;
+    min-height: 0;
+}
+.walk-progress {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #4ecca3;
+    font-family: monospace;
+}
+.device-warning {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #f0a500;
+    line-height: 1.4;
+    word-break: break-all;
+}
