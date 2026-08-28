@@ -10,7 +10,6 @@ from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 
 
-# 刪除原本的 smart_import 函式與後續的 if DvtSecureSocketProxyService is None 判斷
 app = Flask(__name__)
 
 # Global state

@@ -133,3 +133,44 @@ The coordinate readout, the speed labels, the Enter key search, and the outside-
 - **WHEN** the user searches and selects a result whose coordinates are 25.047924, 121.517081
 - **THEN** the coordinate readout reads 25.047924 and 121.517081
 - **AND** no marker is moved and no map view is changed
+
+---
+### Requirement: Initialization entry points are callable before their definitions
+
+The DOM-only initialization block runs at the top of the script, ahead of every
+function definition it calls. Those functions SHALL therefore be declared in a form
+that is reachable from a call site appearing earlier in the same script.
+
+A function declaration (`function name() { ... }`) satisfies this. A function bound to
+a `const`, `let`, or class field does not: the binding is not initialized until control
+reaches it, so a call from the initialization block raises a reference error instead of
+running. Because that error is thrown from a top-level statement, it also stops every
+top-level statement after it — which is precisely the failure mode the DOM-only
+initialization ordering exists to prevent.
+
+Converting these declarations to `const` arrow functions is therefore not a neutral
+modernization. It SHALL NOT be done without first moving the initialization block below
+every definition it depends on, which would reintroduce that failure mode.
+
+#### Scenario: The initialization block runs before the definitions it calls
+
+- **WHEN** the page script is evaluated
+- **THEN** the coordinate readout and both speed labels are populated
+- **AND** the functions that populate them are defined later in the same script
+
+##### Example: the three initialization call sites and their definitions
+
+| Call | Definition | Separation |
+| ---- | ---------- | ---------- |
+| `updateDisplay()`    | `function updateDisplay()`    | ~220 lines later |
+| `updateWalkSpeed()`  | `function updateWalkSpeed()`  | ~344 lines later |
+| `updateSpeed()`      | `function updateSpeed()`      | ~205 lines later |
+
+#### Scenario: A non-hoisted declaration form breaks every downstream initialization
+
+- **GIVEN** one of these functions is redeclared as a `const` arrow function
+- **WHEN** the page loads
+- **THEN** the initialization block raises a reference error
+- **AND** the coordinate readout and speed labels stay at their placeholders
+- **AND** the search key binding and the outside-click dismissal are never bound,
+  because their registration follows the failing statement

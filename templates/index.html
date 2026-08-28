@@ -58,7 +58,7 @@
 placeholder="25.033964, 121.564468
 25.041000, 121.565000
 25.047924, 121.517081"></textarea>
-                <button class="btn-set btn-block" id="btnMultiWalk" style="background:#4ecca3;" onclick="startMultiWalk()">開始移動</button>
+                <button class="btn-set btn-block btn-walk" id="btnMultiWalk" onclick="startMultiWalk()">開始移動</button>
                 <div class="coord-error" id="coordError"></div>
                 <div class="walk-progress" id="walkProgress"></div>
                 <div class="device-warning" id="deviceWarning"></div>
@@ -67,8 +67,8 @@ placeholder="25.033964, 121.564468
             <section class="panel-section">
                 <h2 class="section-title">單點沿路</h2>
                 <div class="section-col">
-                    <button class="btn-set" id="btnWalkTo" style="background:#4ecca3;" onclick="walkToMarker()">沿路走到這裡</button>
-                    <button class="btn-set" id="btnStopWalk" style="background:#e94560;display:none;" onclick="stopAutoWalk()">停止移動</button>
+                    <button class="btn-set btn-walk" id="btnWalkTo" onclick="walkToMarker()">沿路走到這裡</button>
+                    <button class="btn-set btn-walk-stop" id="btnStopWalk" style="display:none;" onclick="stopAutoWalk()">停止移動</button>
                 </div>
             </section>
         </div>
@@ -226,7 +226,7 @@ placeholder="25.033964, 121.564468
 
                 // Custom red marker
                 const markerIcon = L.divIcon({
-                    html: '<div style="width:16px;height:16px;background:#e94560;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    html: '<div class="map-dot map-dot-current"></div>',
                     iconSize: [16, 16],
                     iconAnchor: [8, 8],
                     className: ''
@@ -243,7 +243,7 @@ placeholder="25.033964, 121.564468
 
                 // Click on map to set destination (green marker)
                 destIcon = L.divIcon({
-                    html: '<div style="width:16px;height:16px;background:#4ecca3;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    html: '<div class="map-dot map-dot-dest"></div>',
                     iconSize: [16, 16],
                     iconAnchor: [8, 8],
                     className: ''
@@ -511,9 +511,7 @@ placeholder="25.033964, 121.564468
 
         function numberedIcon(n) {
             return L.divIcon({
-                html: '<div style="width:22px;height:22px;line-height:20px;text-align:center;'
-                    + 'background:#4ecca3;color:#12203c;border:2px solid white;border-radius:50%;'
-                    + 'font-size:12px;font-weight:700;box-shadow:0 0 6px rgba(0,0,0,0.5);">' + n + '</div>',
+                html: '<div class="map-dot map-dot-waypoint">' + n + '</div>',
                 iconSize: [22, 22],
                 iconAnchor: [11, 11],
                 className: ''
@@ -543,6 +541,16 @@ placeholder="25.033964, 121.564468
             btn.disabled = false;
             btn.textContent = '開始移動';
             btn.style.display = 'block';
+        }
+
+        // 與 setMultiWalkButtonIdle 同形：把「沿路走到這裡」按鈕復原成閒置外觀。
+        // 這兩行先前在 walkToMarker 的三個提前返回路徑與 stopAutoWalk 裡各寫一次，
+        // 四處都得記得同時改文字與顏色。顯示與否不在這裡處理 —— walkToMarker 的
+        // 提前返回不動 display，只有 stopAutoWalk 需要，留在它自己那一行。
+        function setWalkToButtonIdle() {
+            var btn = document.getElementById('btnWalkTo');
+            btn.textContent = '沿路走到這裡';
+            btn.classList.remove('busy');
         }
 
         async function startMultiWalk() {
@@ -627,7 +635,7 @@ placeholder="25.033964, 121.564468
 
             var btn = document.getElementById('btnWalkTo');
             btn.textContent = '路線規劃中...';
-            btn.style.background = '#888';
+            btn.classList.add('busy');
 
             try {
                 // 1. Get route from OSRM
@@ -637,8 +645,7 @@ placeholder="25.033964, 121.564468
 
                 if (data.code !== 'Ok' || !data.routes || !data.routes.length) {
                     alert('找不到路線');
-                    btn.textContent = '沿路走到這裡';
-                    btn.style.background = '#4ecca3';
+                    setWalkToButtonIdle();
                     return;
                 }
 
@@ -660,8 +667,7 @@ placeholder="25.033964, 121.564468
 
                 if (walkData.error) {
                     alert('無法開始移動: ' + walkData.error);
-                    btn.textContent = '沿路走到這裡';
-                    btn.style.background = '#4ecca3';
+                    setWalkToButtonIdle();
                     return;
                 }
 
@@ -673,8 +679,7 @@ placeholder="25.033964, 121.564468
             } catch (err) {
                 console.error('路線錯誤:', err);
                 alert('無法取得路線: ' + err.message);
-                btn.textContent = '沿路走到這裡';
-                btn.style.background = '#4ecca3';
+                setWalkToButtonIdle();
             }
         }
 
@@ -728,8 +733,7 @@ placeholder="25.033964, 121.564468
 
             document.getElementById('btnStopWalk').style.display = 'none';
             document.getElementById('btnWalkTo').style.display = 'block';
-            document.getElementById('btnWalkTo').textContent = '沿路走到這裡';
-            document.getElementById('btnWalkTo').style.background = '#4ecca3';
+            setWalkToButtonIdle();
 
             if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
             if (destMarker) { map.removeLayer(destMarker); destMarker = null; }

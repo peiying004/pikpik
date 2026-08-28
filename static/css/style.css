@@ -343,3 +343,41 @@ body {
     line-height: 1.4;
     word-break: break-all;
 }
+
+/* ── 走路控制按鈕的狀態 ──
+   閒置為綠、路線規劃中為灰、停止為紅。狀態以 class 表示，而不是由 JS 寫入
+   style.background —— 先前色碼分散在 HTML 的 inline style 與四處 JS 賦值裡，
+   改一次配色要同時動到樣式表與腳本兩邊。
+   每個狀態都補一條 :hover。這些按鈕原本用 inline style 上色，inline 的優先序
+   高過 .btn-set:hover，所以它們一直都沒有 hover 效果；改用 class 後
+   .btn-set:hover 會贏，補這幾條是為了維持外觀完全不變。若要讓它們有 hover
+   變化，改這裡即可。 */
+.btn-walk { background: #4ecca3; }
+.btn-walk:hover { background: #4ecca3; }
+.btn-walk.busy { background: #888; }
+.btn-walk.busy:hover { background: #888; }
+.btn-walk-stop { background: #e94560; }
+.btn-walk-stop:hover { background: #e94560; }
+
+/* ── 地圖標記圓點 ──
+   目前位置、綠色目的地、多座標的編號航點共用同一個圓形外觀，只有顏色與尺寸
+   不同。原本三個 divIcon 各自把完整樣式拼進 HTML 字串，同一組白邊與陰影重複
+   三次。這裡的尺寸與各 divIcon 的 iconSize 相對應，兩邊要一起改。 */
+.map-dot {
+    border: 3px solid white;
+    border-radius: 50%;
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+}
+.map-dot-current { width: 16px; height: 16px; background: #e94560; }
+.map-dot-dest { width: 16px; height: 16px; background: #4ecca3; }
+.map-dot-waypoint {
+    width: 22px;
+    height: 22px;
+    border-width: 2px;
+    line-height: 20px;
+    text-align: center;
+    background: #4ecca3;
+    color: #12203c;
+    font-size: 12px;
+    font-weight: 700;
+}
