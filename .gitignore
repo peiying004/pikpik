@@ -12,3 +12,17 @@ openspec/.vector-search.db*
 
 # Claude Code 個人設定
 .claude/settings.local.json
+
+# Spectra 生成的 skill 檔案（隨工具版本變動，不進版控）
+# 只擋 spectra-* 前綴，自製的專案 skill 仍會被追蹤
+.claude/skills/spectra-*/
+
+# 機密與憑證（預防性；一旦推上去就會永久留在 git 歷史裡）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+credentials.json
