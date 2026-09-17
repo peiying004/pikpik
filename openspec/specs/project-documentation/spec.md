@@ -69,21 +69,21 @@ When a change adds a feature, it SHALL add that feature to the coverage table in
 | Minimum touch target size                     | 44 CSS 像素                 |
 | Home screen install manifest                  | `manifest.webmanifest`     |
 | Icon generation without added dependencies    | `make_icons.py`            |
+| Connected device identity query               | `/api/device`              |
+| Device identity in the status bar             | `renderDeviceStatus`       |
+| Model names for every listed device           | `_device_models`           |
+| Identity poll kept out of the access log      | `_mute_poll_access_log`    |
 | Route length and duration preview             | `updateRoutePreview`       |
 | Remaining time while a walk runs              | `remainingMeters`          |
 
 
 <!-- @trace
-source: add-walk-duration-display
-updated: 2026-09-17
+source: add-device-identity-display
+updated: 2026-09-18
 code:
-  - static/icons/app-icon-180.png
-  - static/manifest.webmanifest
-  - docs/主要功能程式碼介紹.md
+  - app.py
   - templates/index.html
-  - docs/專案簡介.md
-  - tools/make_icons.py
-  - static/icons/app-icon-512.png
+  - docs/主要功能程式碼介紹.md
 -->
 
 ---

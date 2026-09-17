@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import json
+import logging
 import math
 import socket
 import threading
@@ -9,6 +10,7 @@ import urllib.error
 import urllib.request
 from flask import Flask, render_template, request, jsonify
 
+from pymobiledevice3.irecv_devices import IRECV_DEVICES
 from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, get_tunneld_devices
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
@@ -23,6 +25,35 @@ lock = threading.Lock()
 # Persistent DVT connection
 _dvt = None
 _location_service = None
+
+# 目前這條共用連線所連到的裝置身分，未連線時為 None。連線建立時從 RSD 物件抄下來、
+# 中斷時清除，因此它描述的是「伺服器實際在用哪一台」。刻意不改成查詢時重讀 tunneld
+# 清單再取第一筆——那是在複製 _acquire_rsd 的挑選規則而不是讀它的結果，兩者只在
+# 清單順序不變時才一致，而不一致時沒有任何症狀，要等到定位寫到別支手機才會發現。
+_device_identity = None
+
+# udid 到機型資訊的對照，涵蓋每一次連線嘗試所取得的整份通道裝置清單，而不只是被
+# 選用的那一台。tunneld 的回應本身沒有機型欄位，機型只在 RSD 交握之後才存在；而
+# get_tunneld_devices() 本來就對每一筆通道記錄各做一次交握，現行程式只取第一個、
+# 其餘全部丟棄——這裡只是把已經到手的東西留下來，不多連任何一次。
+#
+# 這是顯示輔助，允許過期：只在連線嘗試發生時更新。從未交握過的裝置就沒有條目，
+# 使用端該讓機型欄位缺席而不是填一個猜測值。
+_device_models = {}
+
+# 目前裝置最後一次已知的可見性，三態：True 在通道清單中、False 讀到清單但沒有它、
+# None 尚未判斷過或最近一次讀取清單失敗。
+#
+# 它只在兩個時刻更新：連線建立時（能連上就代表剛讀到的清單裡有它，這個判斷免費且
+# 當下為真）與診斷執行時（診斷本來就會讀清單）。身分查詢端點不自行查 tunneld ——
+# tunneld 是獨立的 uvicorn 程序，日誌與本伺服器共用同一個終端機而我們過濾不到它；
+# 每幾秒查一次只是把噪音搬到另一個程序。
+#
+# 代價是失去「手機被實體拔掉、伺服器卻仍握著連線物件」的自動偵測。那一種另有更
+# 權威的來源：實際的裝置寫入。通道清單只說通道還在不在，寫入結果說的是真的寫得
+# 進去嗎。
+_device_visible = None
+
 _loop = None
 _loop_thread = None
 
@@ -34,6 +65,26 @@ _device_lock = asyncio.Lock()
 # 單次裝置寫入的上限。超時視為寫入失敗，讓下一個週期能重新嘗試，
 # 避免一個永不完成的寫入把後續寫入永久卡住。
 _DEVICE_WRITE_TIMEOUT = 15
+
+
+# 機型代號到可讀機型名的對照，取自函式庫已內建的裝置表，不自行維護一份清單也不
+# 新增依賴。同一個代號在表中只會有一筆，先攤平成字典避免每次查詢都掃過整張表。
+_MODEL_NAMES = {d.product_type: d.display_name for d in IRECV_DEVICES if d.product_type}
+
+
+def _model_name(product_type):
+    """把 iPhone14,2 這種機型代號轉成 iPhone 13 Pro 這種可讀名稱。
+
+    代號不在表中就回傳代號本身——顯示 iPhone19,1 比顯示空白有用，而表跟不上新機種
+    是常態，不是例外。
+
+    刻意不使用 RSD 物件的 name 屬性：tunneld 建立裝置物件時傳進去的是通道記錄的
+    interface 欄位，所以那個屬性裝的是 utun4 這類網路介面名，不是裝置名稱。它看
+    起來像裝置名，是這條路徑上最容易踩中的陷阱。
+    """
+    if not product_type:
+        return ""
+    return _MODEL_NAMES.get(product_type, product_type)
 
 
 def _ensure_loop():
@@ -61,6 +112,17 @@ async def _acquire_rsd():
     逾時並回傳空清單，因此空清單在已知有通道記錄的前提下就代表通道連不上。
     """
     devices = await get_tunneld_devices()
+
+    # 整份清單的機型都記下來，不只回傳的那一台。交握已經做過了，這裡不產生任何
+    # 額外的裝置往來。清單為空時不清掉舊對照——那代表這次沒問到，不代表之前問到
+    # 的都不算數。
+    for device in devices:
+        _device_models[device.udid] = {
+            "product_type": device.product_type,
+            "model": _model_name(device.product_type),
+            "os_version": device.product_version,
+        }
+
     if not devices:
         raise RuntimeError("No device found via tunneld. Is tunneld running?")
     return devices[0]
@@ -68,7 +130,7 @@ async def _acquire_rsd():
 
 async def _open_developer_service(rsd):
     """在既有的 RSD 通道上開啟 Instruments 通訊與定位模擬服務。"""
-    global _dvt, _location_service
+    global _dvt, _location_service, _device_identity, _device_visible
     # 1. 先建立 DvtProvider (這層提供 Instruments 通訊能力)
     _dvt = DvtProvider(rsd)
     await _dvt.__aenter__()
@@ -76,7 +138,25 @@ async def _open_developer_service(rsd):
     # 2. 將 dvt 實例傳給 LocationSimulation
     _location_service = LocationSimulation(_dvt)
     await _location_service.__aenter__()
-    print("✅ 已成功透過 DvtProvider 建立定位模擬服務")
+
+    # 身分在這裡記錄而不是在 _connect：診斷的連線探測直接呼叫本函式、不經過
+    # _connect，而那條路徑正是使用者主動建立連線的入口。記在這裡兩條路徑都涵蓋。
+    # 記在定位服務建立成功之後：開發者服務開不起來時不該宣稱連上了某台裝置。
+    # interface 取自 rsd.name：函式庫把每一筆通道記錄的 interface 欄位填進這個屬性，
+    # 所以它標示的是「哪一條通道」而不是裝置名稱。同一支手機插著線又在同一個區域
+    # 網路下時會有兩筆 udid 相同、介面名不同的記錄，光靠 udid 分不出用的是哪一條。
+    # 這個欄位只供判定用途，不隨身分對外回報 —— 介面名對使用者沒有意義。
+    _device_identity = {
+        "udid": rsd.udid,
+        "product_type": rsd.product_type,
+        "model": _model_name(rsd.product_type),
+        "os_version": rsd.product_version,
+        "interface": rsd.name or "",
+    }
+    # 能連上就代表剛才讀到的通道清單裡有它。沒有這一行，剛連上的瞬間可見性仍是
+    # 未知，狀態列會顯示「無法確認狀態」而不是「已連接」。
+    _device_visible = True
+    print(f"✅ 已成功透過 DvtProvider 建立定位模擬服務（{_device_identity['model']}）")
 
 
 async def _connect():
@@ -86,7 +166,7 @@ async def _connect():
 
 async def _disconnect():
     """依照相反順序正確關閉連線。"""
-    global _dvt, _location_service
+    global _dvt, _location_service, _device_identity, _device_visible
     # 先關閉定位服務
     if _location_service is not None:
         try:
@@ -101,6 +181,8 @@ async def _disconnect():
             pass
     _dvt = None
     _location_service = None
+    _device_identity = None
+    _device_visible = None
 
 async def _set_location(lat, lng):
     """Set location on the persistent connection, reconnecting if needed.
@@ -287,6 +369,67 @@ def _parse_tunnel_records(tunnels):
     return devices
 
 
+def _refresh_device_visibility(devices, tunneld_reachable):
+    """依剛讀到的通道清單更新可見性。只有診斷會呼叫它。
+
+    身分查詢端點刻意不查 tunneld，所以可見性的唯一兩個更新時刻是連線建立與這裡。
+    診斷本來就會讀清單，這一步不新增任何查詢。
+
+    tunneld 讀不到時設為 None 而不是 False：把 tunneld 掛掉說成裝置離線是把責任
+    推給手機，而使用者接下來要做的事完全不同。無保留身分時不更新——沒有身分就沒有
+    「誰還在不在」可言。
+    """
+    global _device_visible
+    if _device_identity is None:
+        return
+    if not tunneld_reachable:
+        _device_visible = None
+        return
+    _device_visible = any(d["udid"] == _device_identity["udid"] for d in devices)
+
+
+def _annotate_device_models(devices):
+    """替每一筆通道記錄補上機型與是否為使用中的那一台。
+
+    這一步與 _parse_tunnel_records 分開：後者的契約是「欄位原樣取自 tunneld」，
+    而機型不是 tunneld 給的，是 RSD 交握之後才存在的衍生資訊。混在同一個函式裡
+    會讓那份契約變得說不清楚。
+
+    機型名與使用中標記的判定依據刻意不同：機型以 udid 比對，因為同一支手機的每一筆
+    通道記錄都該顯示它是什麼機型；使用中以 udid 加介面名比對，因為承載連線的只有
+    其中一條。
+
+    機型來源依序為目前連線身分與 _device_models 對照。兩者皆無時**不填欄位**，
+    而不是填空字串——使用者會照著機型名行動，一個錯的名字比一串 udid 更糟。
+    使用中標記一律存在，因為「不是使用中」與「不知道是不是」在這裡沒有差別：
+    連線身分要嘛有、要嘛沒有。
+    """
+    identity = _device_identity
+    for device in devices:
+        udid = device["udid"]
+        # udid 不足以指認一條通道：同一支手機插著線又在同一個區域網路下時，會有兩筆
+        # udid 相同、介面名不同的記錄。只比對 udid 會把兩筆都標成使用中，而實際承載
+        # 連線的只有一條——那個標記就在說謊。介面名才是區分它們的欄位。
+        # 記錄的介面名對不上任何一筆時，一筆都不標：少一個提示只是少一個提示，標錯
+        # 會讓使用者以為自己在操作另一條通道。
+        device["in_use"] = bool(
+            identity
+            and identity["udid"] == udid
+            and identity.get("interface", "") == device.get("interface", "")
+        )
+
+        info = None
+        if identity and identity["udid"] == udid:
+            info = identity
+        elif udid in _device_models:
+            info = _device_models[udid]
+
+        if info:
+            device["model"] = info["model"]
+            device["os_version"] = info["os_version"]
+    return devices
+
+
 async def _diag_probe_connection():
     """在裝置鎖保護下確認通道與開發者服務可用，並回報是哪一階段失敗。
 
@@ -336,8 +479,41 @@ def _diag_response(results, devices):
     """
     return jsonify({
         "stages": _diag_build(results),
-        "devices": devices,
+        # 標註排在組裝回應的這一刻，而不是解析之後：階段三的連線探測會更新機型
+        # 對照與連線身分，早於它標註就會漏掉這一輪才問到的機型。
+        "devices": _annotate_device_models(devices),
         "server": {"host": _default_route_address(), "port": _SERVER_PORT},
+    })
+
+
+@app.route("/api/device", methods=["GET"])
+def device_identity():
+    """回報伺服器目前對裝置的認知：連到誰，以及那台是否還在。
+
+    這個端點只讀記憶體——不做 RSD 交握、不開開發者服務、不進 _device_lock，
+    **也不查詢 tunneld**。不查 tunneld 是後來補上的限制：tunneld 是獨立的 uvicorn
+    程序，每收到一次查詢就記一行，而啟動腳本把它丟在同一個終端機的背景——每幾秒
+    查一次只是把噪音從這個伺服器的日誌搬到另一個我們過濾不到的程序。
+
+    identity 與 visible 是兩件不同的事。前者只證明伺服器曾經連上誰，後者才說明
+    那台現在還在不在——只有前者的話，手機拔掉之後畫面仍會顯示「已連接」。
+
+    visible 是三態而不是布林：讀不到清單時是「無從判斷」，不是「不在」。把 tunneld
+    掛掉說成裝置離線，是把責任推給手機，而使用者接下來要做的事完全不同——一個是
+    重新插上手機，一個是重啟 tunneld。
+
+    回傳的是最後一次已知的可見性，由 _open_developer_service 與診斷端點更新，中間
+    可能過期。這個端點一律以成功狀態碼回應。
+    """
+    identity = _device_identity
+    if identity is None:
+        return jsonify({"identity": None, "visible": None})
+
+    # interface 只供內部判定「哪一條通道正在使用」，不對外回報：狀態列只需要機型
+    # 與 OS 版本，介面名對使用者沒有意義，多一個欄位只會擴大這個端點的契約。
+    return jsonify({
+        "identity": {k: v for k, v in identity.items() if k != "interface"},
+        "visible": _device_visible,
     })
 
 
@@ -359,12 +535,14 @@ def diagnostics():
         tunnels = _query_tunneld()
     except Exception as e:
         results["tunneld"] = (_DIAG_FAILED, f"無法連上 tunneld（{host}:{port}）：{e}")
+        _refresh_device_visibility(devices, tunneld_reachable=False)
         return _diag_response(results, devices)
 
     results["tunneld"] = (_DIAG_OK, f"已連上 tunneld（{host}:{port}）。")
 
     # 階段二：tunneld 是否發現裝置。
     devices = _parse_tunnel_records(tunnels)
+    _refresh_device_visibility(devices, tunneld_reachable=True)
     if not devices:
         results["devices"] = (_DIAG_FAILED, "tunneld 可達，但沒有回報任何裝置。")
         return _diag_response(results, devices)
@@ -702,7 +880,53 @@ def walk_status():
     return jsonify(_walk_state)
 
 
+# === 輪詢的存取日誌 ===
+# 身分查詢每 3 秒一次，每小時一千多行存取日誌。這個專案的日誌同時承載 [Walk] 的
+# 進度與裝置寫入失敗，那是判斷裝置還活著的主要線索，被輪詢洗掉就沒得看了。
+_POLL_ACCESS_LOG_PATH = "/api/device"
+
+
+class _PollAccessLogFilter(logging.Filter):
+    """擋掉身分查詢的成功存取日誌，其餘一律放行。
+
+    只擋 2xx。非 2xx 照常記錄，因為那正是唯一值得看的情形：一個每三秒被呼叫的
+    端點若開始回 500，日誌是唯一會說話的地方；整條路徑一併靜音，等於讓這個功能
+    自己的故障變成無聲的。
+
+    判斷依據是日誌記錄攜帶的參數而不是格式化後的整行字串。Werkzeug 以
+    ("GET /api/device HTTP/1.1", "200", "-") 三個參數記錄，而非 2xx 的請求行會被
+    包上終端色碼——比對格式化結果會在色碼上絆倒，也會隨日誌格式改版而失效。
+
+    路徑以切出來的第二個欄位精確比對，不用子字串：子字串會讓 /api/devices-foo
+    這類路徑一起被吞掉。
+    """
+
+    def filter(self, record):
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 3:
+            return True
+
+        request_line, status, _size = args
+        if not str(status).startswith("2"):
+            return True
+
+        parts = str(request_line).split()
+        if len(parts) < 2:
+            return True
+        return parts[1].split("?", 1)[0] != _POLL_ACCESS_LOG_PATH
+
+
+def _mute_poll_access_log():
+    """安裝上述過濾器到 Werkzeug 的存取日誌。
+
+    只影響存取日誌。[Walk] 的進度與裝置寫入失敗走的是 print，不經過這個 logger，
+    因此不受影響。
+    """
+    logging.getLogger("werkzeug").addFilter(_PollAccessLogFilter())
+
+
 if __name__ == "__main__":
     # 綁定所有介面是功能需求（同網段的手機與瀏覽器要連得到這台機器），但互動式
     # 除錯器不是 —— 兩者同時開啟等於把任意程式碼執行的入口開放給同網段。
+    _mute_poll_access_log()
     app.run(host="0.0.0.0", port=_SERVER_PORT, debug=False)

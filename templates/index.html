@@ -84,7 +84,10 @@ placeholder="25.033964, 121.564468
 
             <section class="panel-section">
                 <h2 class="section-title">連線診斷</h2>
-                <button class="btn-set btn-block" id="btnDiagnose">執行診斷</button>
+                <!-- 標示要講出它會連線：這個按鈕在共用連線尚未建立時，會走與正常
+                     連線相同的兩個步驟並保留結果連線，本來就是一顆主動連線鍵。
+                     先前叫「執行診斷」，使用者因此不知道畫面上已經能主動連線。 -->
+                <button class="btn-set btn-block" id="btnDiagnose">連線並診斷</button>
                 <div class="diag-result" id="diagResult"></div>
             </section>
         </div>
@@ -140,6 +143,10 @@ placeholder="25.033964, 121.564468
         document.getElementById('searchInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') searchLocation();
         });
+
+        // 裝置身分輪詢只要 DOM 與 fetch，不碰地圖也不碰搖桿，所以排在這個區塊裡。
+        // 函式庫載入失敗時，使用者最需要知道的其中一件事正是裝置到底連上了沒有。
+        startDevicePolling();
 
         // 診斷只需要 DOM 與 fetch，不碰地圖也不碰搖桿，所以繫結排在這個區塊裡。
         // 函式庫載入失敗恰好是使用者最需要診斷的時機之一，那時它必須還能按。
@@ -367,6 +374,84 @@ placeholder="25.033964, 121.564468
             document.getElementById('btnPanelToggle').textContent = collapsed ? '展開' : '收起';
         }
 
+        // === 裝置狀態列 ===
+        // 狀態列由這個函式獨佔寫入。先前有三處各自直接改文字節點，再加上身分輪詢
+        // 就會變成四個寫入者互相覆蓋：走路中每 500ms 寫一次寫入狀態、輪詢每 3 秒
+        // 寫一次裝置名稱，畫面會在兩種文字之間跳動。
+        //
+        // 文字由兩半組成：裝置身分（來自輪詢）與裝置狀態（來自實際操作）。分成兩半
+        // 才能讓「哪一台」與「發生什麼事」同時在場，而不是互相取代。
+        var deviceIdentity = null;   // /api/device 的 identity，未連線時為 null
+        var deviceVisible = null;    // 三態：true 在 tunneld 清單中、false 不在、null 無從判斷
+        var deviceState = null;      // { phrase, connected }，或 null 表示交由輪詢決定
+
+        // 操作結果只在「需要蓋過輪詢」時才設值：失敗與等待中必須顯示，因為輪詢看不到
+        // 它們。成功則傳 null 交回輪詢 —— 否則一次成功的寫入會把狀態列凍結在「已連接」，
+        // 之後拔掉手機也不會變。
+        function setDeviceState(state) {
+            deviceState = state || null;
+            renderDeviceStatus();
+        }
+
+        function renderDeviceStatus() {
+            var text = document.getElementById('deviceText');
+            var dot = document.getElementById('statusDot');
+            var name = deviceIdentity ? deviceIdentity.model : '';
+            var label, connected;
+
+            if (deviceState) {
+                label = name ? name + ' ' + deviceState.phrase : deviceState.phrase;
+                connected = deviceState.connected;
+            } else if (!deviceIdentity) {
+                label = '未連接裝置';
+                connected = false;
+            } else if (deviceVisible === true) {
+                label = name + ' · iOS ' + deviceIdentity.os_version + ' 已連接';
+                connected = true;
+            } else if (deviceVisible === false) {
+                // 「不在清單中」與「查不到清單」要分開講：前者該重新插上手機，
+                // 後者該重啟 tunneld，把後者說成離線是把責任推給手機。
+                label = name + ' 已離線';
+                connected = false;
+            } else {
+                label = name + ' · 無法確認狀態';
+                connected = false;
+            }
+
+            text.textContent = label;
+            dot.classList.toggle('connected', connected);
+        }
+
+        // 每 3 秒問一次伺服器目前連到誰。走路輪詢是 500ms 因為它要驅動地圖上的標記；
+        // 裝置身分不需要那個頻率，而這個端點不碰裝置，成本只有一次本機查詢。
+        // 查詢失敗時保留既有文字而不清空 —— 伺服器暫時連不上不代表手機不見了。
+        var DEVICE_POLL_MS = 3000;
+
+        // 回應處理獨立成同步函式：缺欄位就整筆不採用，保留既有文字。回傳是否採用，
+        // 讓「拿到壞回應」與「拿到好回應」在測試中分得開。
+        function applyDeviceStatus(data) {
+            if (!data || !('identity' in data)) return false;
+            deviceIdentity = data.identity;
+            deviceVisible = ('visible' in data) ? data.visible : null;
+            renderDeviceStatus();
+            return true;
+        }
+
+        async function pollDeviceIdentity() {
+            try {
+                var resp = await fetch('/api/device');
+                applyDeviceStatus(await resp.json());
+            } catch (err) {
+                // 查詢失敗保留既有文字，不中斷輪詢 —— 伺服器暫時連不上，
+                // 不代表手機不見了。
+            }
+        }
+
+        function startDevicePolling() {
+            pollDeviceIdentity();
+            setInterval(pollDeviceIdentity, DEVICE_POLL_MS);
+        }
+
         function updateDisplay() {
             document.getElementById('latDisplay').textContent = markerLat.toFixed(6);
             document.getElementById('lngDisplay').textContent = markerLng.toFixed(6);
@@ -451,17 +536,14 @@ placeholder="25.033964, 121.564468
                     body: JSON.stringify(loc)
                 });
                 var data = await resp.json();
-                var dot = document.getElementById('statusDot');
-                var text = document.getElementById('deviceText');
                 if (data.device) {
-                    dot.classList.add('connected');
-                    text.textContent = '裝置已連接';
+                    // 成功時交回輪詢，不把狀態列釘在「已連接」。
+                    setDeviceState(null);
                 } else {
-                    dot.classList.remove('connected');
                     // 後端在失敗時回傳的欄位名是 error（與走路路徑的 device_error
                     // 同一組命名）。先前這裡讀的 message 後端從未回傳，於是不論
                     // tunneld 沒開、裝置拔掉還是逾時，使用者一律只看到固定文字。
-                    text.textContent = data.error || '未連接裝置';
+                    setDeviceState({ phrase: data.error || '未連接裝置', connected: false });
                 }
             } catch (err) {
                 console.error('Send error:', err);
@@ -480,8 +562,9 @@ placeholder="25.033964, 121.564468
         async function stopSimulation() {
             try {
                 await fetch('/api/stop', { method: 'POST' });
-                document.getElementById('statusDot').classList.remove('connected');
-                document.getElementById('deviceText').textContent = '已停止';
+                // 停止模擬會關閉共用連線，身分隨之清除；這裡先給即時回饋，
+                // 下一次輪詢讀到 identity 為 null 後會轉為「未連接裝置」。
+                setDeviceState({ phrase: '已停止', connected: false });
             } catch (err) {
                 console.error('Stop error:', err);
             }
@@ -727,23 +810,19 @@ placeholder="25.033964, 121.564468
         // 顯示，裝置早已凍結時介面仍會顯示一切正常。
         function updateDeviceWarning(st) {
             var warnEl = document.getElementById('deviceWarning');
-            var dot = document.getElementById('statusDot');
-            var text = document.getElementById('deviceText');
 
             if (st.device_ok === false) {
                 warnEl.textContent = '⚠ 裝置寫入失敗：' + (st.device_error || '未知原因');
-                dot.classList.remove('connected');
-                text.textContent = '裝置寫入失敗';
+                setDeviceState({ phrase: '裝置寫入失敗', connected: false });
             } else if (st.device_ok === true) {
                 warnEl.textContent = '';
-                dot.classList.add('connected');
-                text.textContent = '裝置已連接';
+                // 成功時交回輪詢，狀態列因此會帶上裝置名稱而不是固定文字。
+                setDeviceState(null);
             } else {
                 // 第三態：這一輪還沒有任何寫入結果。只有讀到明確的成功才點亮圓點，
                 // 否則走路剛開始的第一次輪詢就會在毫無根據的情況下宣稱裝置已連接。
                 warnEl.textContent = '';
-                dot.classList.remove('connected');
-                text.textContent = '等待裝置回應…';
+                setDeviceState({ phrase: '等待裝置回應…', connected: false });
             }
         }
 
@@ -899,7 +978,7 @@ placeholder="25.033964, 121.564468
             var btn = document.getElementById('btnDiagnose');
             var box = document.getElementById('diagResult');
             btn.disabled = true;
-            btn.textContent = '診斷中…';
+            btn.textContent = '連線中…';
             box.textContent = '';
 
             fetch('/api/diagnostics')
@@ -912,7 +991,7 @@ placeholder="25.033964, 121.564468
                 })
                 .finally(function () {
                     btn.disabled = false;
-                    btn.textContent = '執行診斷';
+                    btn.textContent = '連線並診斷';
                 });
         }
 
@@ -966,6 +1045,20 @@ placeholder="25.033964, 121.564468
             } else {
                 dl.textContent = '裝置（' + devs.length + '）：';
                 devs.forEach(function (d) {
+                    // 機型名自成一行且不套用樣式類別 —— 它繼承清單容器的一般字級，
+                    // 與下一行既有的等寬小字自然形成主次，不必新增任何 CSS 規則。
+                    // 刻意不挪用階段狀態的淡化類別：那個類別的語義是「這一階段沒有
+                    // 執行」，共用會讓兩種完全不同的狀態長得一樣。
+                    // 機型未知時整行省略，不留空行 —— 後端在問不到機型時不送這個
+                    // 欄位，前端也不該補一個佔位字串。
+                    if (d.model) {
+                        var head = document.createElement('div');
+                        head.textContent = d.model
+                            + (d.os_version ? ' · iOS ' + d.os_version : '')
+                            + (d.in_use ? '（使用中）' : '');
+                        dl.appendChild(head);
+                    }
+
                     var line = document.createElement('div');
                     line.className = 'diag-device';
                     // 不宣稱走 USB 還是 Wi-Fi —— tunneld 沒有這個欄位，從位址形式
