@@ -11,6 +11,9 @@ ownership of pointer, touch, and scroll gestures that begin inside the joystick
 container, responsive movement that stops when the joystick is released, and the
 container's visual distinctness from the map beneath it.
 
+In a narrow viewport the container's size and position are governed by
+`mobile-viewport-layout`; its translucent background and CSS class name hold at every width.
+
 The joystick container is an overlay sibling of the map rather than a child of it, so
 gesture ownership has to be asserted explicitly or the map claims the drag. The
 joystick's position is deliberately outside the control panel — see
@@ -89,10 +92,40 @@ While the joystick drives movement, the system SHALL follow the marker with the 
 ---
 ### Requirement: Joystick container remains visually distinct
 
-The joystick container SHALL retain a translucent background so that it stays visually distinguishable from the map beneath it, and SHALL retain its existing size, position, and CSS class name.
+The joystick container SHALL retain a translucent background so that it stays visually distinguishable from the map beneath it, at every viewport width. It SHALL retain its existing CSS class name at every viewport width.
+
+In a wide viewport, the joystick container SHALL retain its existing size and position.
+
+In a narrow viewport, the joystick's size and position are governed by `mobile-viewport-layout`, which reduces its size and places it above the control panel. The translucent background and the CSS class name SHALL be unaffected by that relocation.
 
 #### Scenario: Joystick stays distinguishable from the map
 
 - **WHEN** the user views the simulator page over map tiles of any brightness
 - **THEN** the joystick container is distinguishable from the map beneath it
-- **AND** the joystick occupies the same position and size as before this change
+
+#### Scenario: Joystick keeps its size and position in a wide viewport
+
+- **WHEN** the user views the simulator page in a wide viewport
+- **THEN** the joystick occupies the same position and size as before this change
+
+#### Scenario: Relocation in a narrow viewport preserves the background and class name
+
+- **WHEN** the user views the simulator page in a narrow viewport
+- **THEN** the joystick container retains a translucent background
+- **AND** the joystick container keeps the same CSS class name it has in a wide viewport
+
+<!-- @trace
+source: add-mobile-remote-control
+updated: 2026-09-07
+code:
+  - docs/系統架構設計圖.md
+  - static/manifest.webmanifest
+  - docs/主要功能程式碼介紹.md
+  - static/icons/app-icon-512.png
+  - tools/make_icons.py
+  - templates/index.html
+  - static/icons/app-icon-180.png
+  - app.py
+  - docs/專案簡介.md
+  - static/css/style.css
+-->

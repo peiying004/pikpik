@@ -381,3 +381,148 @@ body {
     font-size: 12px;
     font-weight: 700;
 }
+
+/* === 連線診斷 === */
+.diag-result {
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+}
+/* 三態各有自己的色與左側標線。未執行必須看得出來不是失敗 —— 前者是「前面就斷了
+   所以沒跑」，後者是「跑了而且失敗」，要做的事不一樣。 */
+.diag-stage {
+    margin-bottom: 6px;
+    padding-left: 6px;
+    border-left: 2px solid #24304f;
+}
+.diag-stage-head {
+    font-weight: 600;
+}
+.diag-ok {
+    border-left-color: #4ecca3;
+}
+.diag-ok .diag-stage-head {
+    color: #4ecca3;
+}
+.diag-failed {
+    border-left-color: #e94560;
+}
+.diag-failed .diag-stage-head {
+    color: #e94560;
+}
+.diag-not-run {
+    border-left-color: #24304f;
+    opacity: 0.55;
+}
+.diag-not-run .diag-stage-head {
+    color: #8a93ad;
+    font-weight: 400;
+}
+.diag-detail {
+    color: #b6bdd0;
+    word-break: break-all;
+}
+.diag-next {
+    color: #f0a500;
+    margin-top: 2px;
+}
+.diag-address {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #24304f;
+    color: #4ecca3;
+    font-family: monospace;
+    word-break: break-all;
+}
+.diag-devices {
+    margin-top: 6px;
+    color: #b6bdd0;
+}
+.diag-device {
+    font-family: monospace;
+    font-size: 10px;
+    word-break: break-all;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   窄視窗（手機直向）
+   斷點只看寬度，不看高度：矮而寬的視窗已由 .control-panel 既有的
+   max-height 與內部捲動處理，那是另一個問題。
+
+   面板改為貼底的抽屜而非縮窄的左側浮層：面板有五個區段、含一個多行
+   座標輸入，壓縮寬度後仍會蓋住畫面主體，而地圖正是選定目的地時必須
+   操作的對象。貼底則讓地圖保有上半部的完整可視區域。
+   ══════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+    /* 兩個共用高度只寫一次。面板的下緣、面板的高度上限、搖桿的兩個讓位距離
+       都要用到它們，各處分別硬編遲早會走散——這一版就是這樣先寫錯的。
+       --status-bar-h 必須等於 .info-bar 的實際高度（padding 8+8、內容 17、
+       上邊框 1，量得 34px）；小於實際值，面板就會壓在狀態列上。
+       --sheet-header-h 明確固定收起後的標題列高度，不讓它隨內容浮動——搖桿
+       要靠它算讓位距離，而 CSS 無法讀取另一個元素的高度。 */
+    :root {
+        --status-bar-h: 34px;
+        --sheet-header-h: 60px;
+    }
+    .panel-header {
+        min-height: var(--sheet-header-h);
+    }
+    /* 底部抽屜。bottom 留出狀態列的高度 —— 面板不得與狀態列重疊，
+       這條要求在任何視窗尺寸下都成立。 */
+    .control-panel {
+        top: auto;
+        left: 0;
+        right: 0;
+        bottom: var(--status-bar-h);
+        width: 100%;
+        /* 高度上限要同時滿足兩件事：不超過視窗的一半，且展開後上緣不低於視窗
+           中線（地圖必須保住上半部）。面板自下緣往上長，上緣為
+           100vh - 狀態列 - 高度，要讓它不小於 50vh，高度上限就是
+           50vh 扣掉狀態列 —— 直接寫 50vh 會讓上緣落在中線之下，正好侵入
+           地圖那一半。超出上限時由 .panel-body 內部捲動。 */
+        max-height: calc(50vh - var(--status-bar-h));
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+        border-radius: 10px 10px 0 0;
+    }
+    /* 五個區段一律保留，窄視窗不隱藏任何一段 —— 藏起來的控制項在手機上
+       等於不存在，而使用者是為了在手機上操作才需要這個版面。 */
+    .panel-body {
+        padding: 10px 14px 14px;
+    }
+
+    /* 搖桿：縮小並落在收起面板之上。窄螢幕放不下 140px 又要留住地圖，
+       110px 仍足以操作。 */
+    .joystick-container {
+        width: 110px;
+        height: 110px;
+        right: 16px;
+        /* 收起時讓開狀態列與收起後的抽屜。11px = 面板上邊框 1px + 間距 10px。 */
+        bottom: calc(var(--status-bar-h) + var(--sheet-header-h) + 11px);
+    }
+    /* 面板展開時搖桿要跟著上移，否則會被抽屜蓋住。選擇器靠的是標記順序
+       —— 搖桿在面板之後，所以能用通用兄弟選取；這也是搖桿刻意留在面板
+       之外的一個附帶好處。
+       抽屜展開後上緣落在 50vh，再留 10px 間距。 */
+    .control-panel:not(.collapsed) ~ .joystick-container {
+        bottom: calc(50vh + 10px);
+    }
+
+    /* 觸控目標下限 44px。桌面滑鼠指標的命中精度是一兩個像素，手指不是；
+       44px 是 Apple 人機介面指南給觸控目標的下限，也是一個可以直接量的數字。
+       只在窄視窗放大，寬視窗的外觀不動。 */
+    .btn-set,
+    .btn-center,
+    .panel-toggle,
+    .btn-search,
+    .btn-stop {
+        min-height: 44px;
+        min-width: 44px;
+    }
+    /* 滑桿維持原生外觀與 accent-color，只把元素高度撐開 —— 觸控命中區是整個
+       元素的高度，軌道仍由瀏覽器自行垂直居中繪製，不必自訂 track 與 thumb。 */
+    .speed-row input[type="range"] {
+        height: 44px;
+    }
+}

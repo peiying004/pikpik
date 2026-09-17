@@ -1,11 +1,15 @@
 import asyncio
 import functools
+import json
 import math
+import socket
 import threading
 import time
+import urllib.error
+import urllib.request
 from flask import Flask, render_template, request, jsonify
 
-from pymobiledevice3.tunneld.api import get_tunneld_devices
+from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, get_tunneld_devices
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 
@@ -49,23 +53,36 @@ def _run_async(coro):
     return future.result(timeout=_DEVICE_WRITE_TIMEOUT)
 
 
-async def _connect():
-    """建立包含 DvtProvider 層的連線。"""
-    global _dvt, _location_service
+async def _acquire_rsd():
+    """取得一條已連線的 RSD 通道。
+
+    拆成獨立的一步，是為了讓診斷能分別判定「通道連不上」與「開發者服務開不起來」
+    ——這兩種失敗要做的事不同。函式庫在把通道記錄轉為可用裝置時會靜默跳過連線
+    逾時並回傳空清單，因此空清單在已知有通道記錄的前提下就代表通道連不上。
+    """
     devices = await get_tunneld_devices()
     if not devices:
         raise RuntimeError("No device found via tunneld. Is tunneld running?")
-    
-    rsd = devices[0]
-    
+    return devices[0]
+
+
+async def _open_developer_service(rsd):
+    """在既有的 RSD 通道上開啟 Instruments 通訊與定位模擬服務。"""
+    global _dvt, _location_service
     # 1. 先建立 DvtProvider (這層提供 Instruments 通訊能力)
     _dvt = DvtProvider(rsd)
     await _dvt.__aenter__()
-    
+
     # 2. 將 dvt 實例傳給 LocationSimulation
     _location_service = LocationSimulation(_dvt)
     await _location_service.__aenter__()
     print("✅ 已成功透過 DvtProvider 建立定位模擬服務")
+
+
+async def _connect():
+    """建立包含 DvtProvider 層的連線。"""
+    rsd = await _acquire_rsd()
+    await _open_developer_service(rsd)
 
 async def _disconnect():
     """依照相反順序正確關閉連線。"""
@@ -160,6 +177,226 @@ def stop_simulation():
         except Exception:
             pass
     return jsonify({"status": "stopped"})
+
+
+# === Connection Diagnostics ===
+
+# 階段結果的三態。not_run 與 failed 必須分開：前者表示前置階段已經失敗、這一階段
+# 根本沒有執行，後者表示這一階段真的跑了而且失敗。兩者對使用者的意義與後續動作
+# 完全不同，壓成布林正是這個端點要消除的那種歧義。
+_DIAG_OK = "ok"
+_DIAG_FAILED = "failed"
+_DIAG_NOT_RUN = "not_run"
+
+# 診斷查詢 tunneld 的逾時。使用者按下診斷後還在等，所以取得比裝置寫入更短的上限；
+# tunneld 在本機，正常情況下是毫秒等級，會用到這個逾時就代表它沒在聽。
+_DIAG_HTTP_TIMEOUT = 5
+
+# 監聽通訊埠。診斷要回報手機該連的網址，與 app.run 共用同一個值，避免兩處各寫一次
+# 而在改動時走散。
+_SERVER_PORT = 8080
+
+
+def _default_route_address():
+    """取得預設路由所對應的本機位址。
+
+    開一個 UDP socket 並指定外部目標，讓作業系統挑出對外的介面後讀回本端位址；
+    UDP 的 connect 不送出任何封包，所以這個動作沒有網路副作用。
+
+    只回報預設路由那一個位址，不列舉所有介面——列舉需要第三方套件，與不新增依賴的
+    目標衝突。Mac 同時連著多個網路時，回報的位址可能不是使用者預期的那一個，因此
+    介面上標示為預設路由位址而非唯一位址。取不到時回空字串，讓其餘診斷照常回報。
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        sock.close()
+
+# 四個階段的固定順序、顯示名稱與失敗時的後續動作。四筆後續動作文字互不相同：
+# 每一種失敗要做的事都不一樣，而把它們壓成同一句正是這個端點要修掉的缺陷。
+_DIAG_STAGE_META = [
+    (
+        "tunneld",
+        "tunneld 服務",
+        "以 sudo 啟動 tunneld，再重新診斷。",
+    ),
+    (
+        "devices",
+        "裝置發現",
+        "接上 USB 線；若要無線連線，請確認裝置已與這台 Mac 配對信任、"
+        "已在 Finder 啟用透過 Wi-Fi 同步、且已開啟開發者模式。",
+    ),
+    (
+        "tunnel",
+        "通道連線",
+        "通道已登記但連不上。重新啟動 tunneld；若裝置剛切換過網路，"
+        "重新接線可讓通道重新建立。",
+    ),
+    (
+        "developer",
+        "開發者服務",
+        "確認裝置已開啟開發者模式（設定 → 隱私權與安全性 → 開發者模式），"
+        "並已在裝置上信任這台 Mac。",
+    ),
+]
+
+
+def _diag_stage(stage_id, name, outcome, detail="", next_action=""):
+    """組出一筆階段結果。四個欄位一律存在，未使用時為空字串而不是缺欄位。"""
+    return {
+        "id": stage_id,
+        "name": name,
+        "outcome": outcome,
+        "detail": detail,
+        "next_action": next_action,
+    }
+
+
+def _query_tunneld():
+    """向 tunneld 的 HTTP 端點取得通道清單。
+
+    以標準程式庫的 urllib 直接查詢，不呼叫 pymobiledevice3 中底線開頭的私有函式
+    ——那是未公開介面，函式庫升版即可能無聲失效。位址取自函式庫已公開的
+    TUNNELD_DEFAULT_ADDRESS 常數，不自行寫死。
+    """
+    host, port = TUNNELD_DEFAULT_ADDRESS
+    with urllib.request.urlopen(f"http://{host}:{port}", timeout=_DIAG_HTTP_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _parse_tunnel_records(tunnels):
+    """把 tunneld 的回應攤平成裝置清單。
+
+    回應形如 {udid: [{tunnel-address, tunnel-port, interface}, ...]}，同一台裝置
+    可能有多筆通道記錄，每筆各自成為一個項目。欄位原樣回報：tunneld 沒有提供
+    連線型態，從位址形式反推 USB 或 Wi-Fi 並不可靠，所以不做這個判定。
+    """
+    devices = []
+    for udid, entries in tunnels.items():
+        for entry in entries:
+            devices.append({
+                "udid": udid,
+                "interface": entry.get("interface", ""),
+                "tunnel_address": entry.get("tunnel-address", ""),
+                "tunnel_port": entry.get("tunnel-port", 0),
+            })
+    return devices
+
+
+async def _diag_probe_connection():
+    """在裝置鎖保護下確認通道與開發者服務可用，並回報是哪一階段失敗。
+
+    共用定位服務已建立時直接回報沿用——既有連線能存在，本身就是通道與開發者服務
+    都可用的證據，沒有必要再開一條。尚未建立時走的是正常連線路徑的同兩個步驟，
+    並在序列化定位寫入的同一把鎖下進行，因此不會與寫入或彼此並行；建立成功後保留
+    連線而不關閉，等同為後續操作暖機。
+
+    回傳 (result, error)，result 為 reused / connected / tunnel_failed /
+    developer_failed。
+    """
+    async with _device_lock:
+        if _location_service is not None:
+            return "reused", None
+        try:
+            rsd = await _acquire_rsd()
+        except Exception as e:
+            return "tunnel_failed", e
+        try:
+            await _open_developer_service(rsd)
+        except Exception as e:
+            return "developer_failed", e
+        return "connected", None
+
+
+def _diag_build(results):
+    """依固定順序組出四筆階段結果，未填入的階段標為 not_run。
+
+    沒有結果表示前面某一階段已經失敗、這一階段根本沒有執行——這與「跑了而且失敗」
+    必須分開表達。後續動作只在失敗時填入，成功與未執行的階段該欄位為空字串。
+    """
+    stages = []
+    for stage_id, name, next_action in _DIAG_STAGE_META:
+        outcome, detail = results.get(stage_id, (_DIAG_NOT_RUN, ""))
+        stages.append(_diag_stage(
+            stage_id, name, outcome, detail,
+            next_action if outcome == _DIAG_FAILED else "",
+        ))
+    return stages
+
+
+def _diag_response(results, devices):
+    """組出診斷回應。
+
+    伺服器位址與階段結果一起回報，因為「我手機該連哪個網址」和「連線鏈通不通」
+    是同一個問題的兩半。位址取不到時為空字串，不影響其餘輸出。
+    """
+    return jsonify({
+        "stages": _diag_build(results),
+        "devices": devices,
+        "server": {"host": _default_route_address(), "port": _SERVER_PORT},
+    })
+
+
+@app.route("/api/diagnostics", methods=["GET"])
+def diagnostics():
+    """逐階段探測裝置連線鏈，回報每一階段各自的成敗與後續動作。
+
+    這個端點是唯讀的：不寫入座標、不清除模擬定位、不關閉既有連線，也不動走路狀態。
+    任一階段失敗時後續階段不執行，但端點本身仍以成功狀態碼回應——階段失敗是診斷的
+    正常輸出，不是端點的錯誤。以非 2xx 回應會讓前端無法區分「診斷跑完且發現問題」
+    與「診斷自己壞了」。
+    """
+    host, port = TUNNELD_DEFAULT_ADDRESS
+    results = {}
+    devices = []
+
+    # 階段一：tunneld 是否可達。
+    try:
+        tunnels = _query_tunneld()
+    except Exception as e:
+        results["tunneld"] = (_DIAG_FAILED, f"無法連上 tunneld（{host}:{port}）：{e}")
+        return _diag_response(results, devices)
+
+    results["tunneld"] = (_DIAG_OK, f"已連上 tunneld（{host}:{port}）。")
+
+    # 階段二：tunneld 是否發現裝置。
+    devices = _parse_tunnel_records(tunnels)
+    if not devices:
+        results["devices"] = (_DIAG_FAILED, "tunneld 可達，但沒有回報任何裝置。")
+        return _diag_response(results, devices)
+
+    results["devices"] = (_DIAG_OK, f"發現 {len(devices)} 筆通道記錄。")
+
+    # 階段三與階段四：通道連線與開發者服務。兩者共用一次探測——沿用既有連線時
+    # 兩階段一起成立，重新建立時則能分辨是哪一步失敗。
+    try:
+        probe, err = _run_async(_diag_probe_connection())
+    except Exception as e:
+        # 探測本身沒跑完（例如逾時），這一階段沒有結果可言，記為失敗並停在這裡。
+        results["tunnel"] = (_DIAG_FAILED, f"探測連線時中斷：{e}")
+        return _diag_response(results, devices)
+
+    if probe == "tunnel_failed":
+        results["tunnel"] = (_DIAG_FAILED, f"通道無法連上：{err}")
+        return _diag_response(results, devices)
+
+    if probe == "developer_failed":
+        results["tunnel"] = (_DIAG_OK, "通道連線正常。")
+        results["developer"] = (_DIAG_FAILED, f"開發者服務無法開啟：{err}")
+        return _diag_response(results, devices)
+
+    if probe == "reused":
+        detail = "沿用既有的定位服務連線，未另開連線。"
+    else:
+        detail = "已建立連線並保留。"
+    results["tunnel"] = (_DIAG_OK, "通道連線正常。")
+    results["developer"] = (_DIAG_OK, detail)
+
+    return _diag_response(results, devices)
 
 
 # === Auto Walk (server-side) ===
@@ -468,4 +705,4 @@ def walk_status():
 if __name__ == "__main__":
     # 綁定所有介面是功能需求（同網段的手機與瀏覽器要連得到這台機器），但互動式
     # 除錯器不是 —— 兩者同時開啟等於把任意程式碼執行的入口開放給同網段。
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="0.0.0.0", port=_SERVER_PORT, debug=False)

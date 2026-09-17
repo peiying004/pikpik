@@ -6,6 +6,16 @@
     <title>iOS GPS 模擬器</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}" />
+    <!-- 加入主畫面後的啟動外觀。iOS 不讀資訊清單的 display 欄位，獨立模式與
+         狀態列樣式要靠這兩個 apple- 前綴的 meta；圖示也只吃 PNG，不接受 SVG。
+         狀態列取 black 而非 black-translucent：後者會讓頁面內容延伸到狀態列與
+         瀏海底下，而 viewport 沒有 viewport-fit=cover、版面也沒有安全區內距，
+         頂列會被遮掉一截。 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="GPS 模擬器" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/app-icon-180.png') }}" />
 </head>
 <body>
     <div class="top-bar">
@@ -71,6 +81,12 @@ placeholder="25.033964, 121.564468
                     <button class="btn-set btn-walk-stop" id="btnStopWalk" style="display:none;" onclick="stopAutoWalk()">停止移動</button>
                 </div>
             </section>
+
+            <section class="panel-section">
+                <h2 class="section-title">連線診斷</h2>
+                <button class="btn-set btn-block" id="btnDiagnose">執行診斷</button>
+                <div class="diag-result" id="diagResult"></div>
+            </section>
         </div>
     </div>
 
@@ -124,6 +140,20 @@ placeholder="25.033964, 121.564468
         document.getElementById('searchInput').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') searchLocation();
         });
+
+        // 診斷只需要 DOM 與 fetch，不碰地圖也不碰搖桿，所以繫結排在這個區塊裡。
+        // 函式庫載入失敗恰好是使用者最需要診斷的時機之一，那時它必須還能按。
+        document.getElementById('btnDiagnose').addEventListener('click', runDiagnostics);
+
+        // 窄視窗載入時預設收起。面板在窄視窗貼底且展開可達視窗一半高，一開頁就展開
+        // 會蓋掉地圖，而地圖正是要點選目的地的那個對象。收起狀態不寫入任何儲存，
+        // 所以這只影響載入當下，使用者展開後重新載入仍回到收起 —— 與既有規格的
+        // 「收起狀態不跨頁面載入保留」一致。
+        // 判斷用 matchMedia，與樣式表的斷點同一個條件，避免兩處寫下不同的門檻。
+        if (window.matchMedia('(max-width: 768px)').matches) {
+            document.getElementById('controlPanel').classList.add('collapsed');
+            document.getElementById('btnPanelToggle').textContent = '展開';
+        }
 
         // 結果列表的點擊以委派處理，座標從資料屬性取得。與上面的 Enter 鍵綁定同樣
         // 放在只依賴 DOM 的初始化區塊，函式庫失效時搜尋與選取仍然可用。
@@ -748,6 +778,95 @@ placeholder="25.033964, 121.564468
             document.getElementById('walkProgress').textContent = keepProgress;
             document.getElementById('deviceWarning').textContent = '';
             setMultiWalkButtonIdle();
+        }
+
+        // === 連線診斷 ===
+        // 四個階段各自呈現。三態以不同樣式表示：未執行的階段不能看起來像失敗，
+        // 因為「前面就斷了所以沒跑」和「跑了而且失敗」要做的事不一樣，而把兩者
+        // 混為一談正是這個功能要消除的歧義。
+        var DIAG_MARK = { ok: '✓', failed: '✗', not_run: '–' };
+        var DIAG_CLASS = { ok: 'diag-ok', failed: 'diag-failed', not_run: 'diag-not-run' };
+
+        function runDiagnostics() {
+            var btn = document.getElementById('btnDiagnose');
+            var box = document.getElementById('diagResult');
+            btn.disabled = true;
+            btn.textContent = '診斷中…';
+            box.textContent = '';
+
+            fetch('/api/diagnostics')
+                .then(function (r) { return r.json(); })
+                .then(function (data) { renderDiagnostics(data); })
+                .catch(function (err) {
+                    // 連不到本機伺服器本身，與任何階段失敗無關 —— 分開呈現，
+                    // 否則使用者會以為是裝置的問題。
+                    box.textContent = '無法取得診斷結果：' + err;
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                    btn.textContent = '執行診斷';
+                });
+        }
+
+        function renderDiagnostics(data) {
+            var box = document.getElementById('diagResult');
+            box.textContent = '';
+
+            (data.stages || []).forEach(function (st) {
+                var row = document.createElement('div');
+                row.className = 'diag-stage ' + (DIAG_CLASS[st.outcome] || 'diag-not-run');
+
+                var head = document.createElement('div');
+                head.className = 'diag-stage-head';
+                // 以 textContent 逐段填入，不拼 innerHTML —— detail 帶的是裝置與
+                // 函式庫回報的例外訊息，內容不由我們決定。
+                head.textContent = (DIAG_MARK[st.outcome] || '–') + ' ' + st.name;
+                row.appendChild(head);
+
+                if (st.detail) {
+                    var d = document.createElement('div');
+                    d.className = 'diag-detail';
+                    d.textContent = st.detail;
+                    row.appendChild(d);
+                }
+                if (st.next_action) {
+                    var n = document.createElement('div');
+                    n.className = 'diag-next';
+                    n.textContent = '→ ' + st.next_action;
+                    row.appendChild(n);
+                }
+                box.appendChild(row);
+            });
+
+            var server = data.server || {};
+            var addr = document.createElement('div');
+            addr.className = 'diag-address';
+            if (server.host) {
+                // 標示為預設路由位址而非唯一位址：後端只回報預設路由對應的那一個，
+                // 不列舉所有介面。
+                addr.textContent = '手機請連（預設路由位址）：http://' + server.host + ':' + server.port;
+            } else {
+                addr.textContent = '無法判定本機位址，請自行於系統設定查詢。';
+            }
+            box.appendChild(addr);
+
+            var devs = data.devices || [];
+            var dl = document.createElement('div');
+            dl.className = 'diag-devices';
+            if (devs.length === 0) {
+                dl.textContent = '未發現裝置。';
+            } else {
+                dl.textContent = '裝置（' + devs.length + '）：';
+                devs.forEach(function (d) {
+                    var line = document.createElement('div');
+                    line.className = 'diag-device';
+                    // 不宣稱走 USB 還是 Wi-Fi —— tunneld 沒有這個欄位，從位址形式
+                    // 反推並不可靠。原樣列出介面位址，拔線前後比對即可看出差異。
+                    line.textContent = d.udid + ' @ ' + d.interface;
+                    dl.appendChild(line);
+                });
+            }
+            box.appendChild(dl);
         }
 
         // 座標讀數與速度標籤的初始化在腳本開頭就已完成（見「只依賴 DOM 的初始化」），

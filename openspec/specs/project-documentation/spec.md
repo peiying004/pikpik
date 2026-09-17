@@ -12,6 +12,8 @@ The project documentation under the docs directory SHALL describe every feature 
 
 An anchor term SHALL be an identifier taken from the source code (a function name, constant name, state field, or endpoint path) whenever a suitable one exists, because such a term appears in the documentation only where that feature is being described. Where no suitable identifier exists, the feature's name SHALL be used as the anchor.
 
+When a change adds a feature, it SHALL add that feature to the coverage table in the same change. A feature that ships without an anchor term is indistinguishable from a feature that was never built, and the mechanical check cannot report what it was never told to look for.
+
 #### Scenario: Every anchor term is present
 
 - **WHEN** the documentation is searched for each anchor term in the coverage table
@@ -57,6 +59,33 @@ An anchor term SHALL be an identifier taken from the source code (a function nam
 | Coordinate list parsing                       | `parseCoordInput`          |
 | Walk polling and teardown split               | `startWalkPolling`         |
 | Document-only initialization ordering         | 只依賴 DOM 的初始化         |
+| Layered connection diagnostics endpoint       | `/api/diagnostics`         |
+| Four ordered stages with per-stage next action | `_DIAG_STAGE_META`        |
+| Three-state stage outcome                     | `_DIAG_NOT_RUN`            |
+| Diagnostics reusing the shared connection     | `_diag_probe_connection`   |
+| Tunnel and developer service judged separately | `_acquire_rsd`            |
+| Server address reported for phone access      | `_default_route_address`   |
+| Narrow-viewport bottom sheet                  | `--status-bar-h`           |
+| Minimum touch target size                     | 44 CSS 像素                 |
+| Home screen install manifest                  | `manifest.webmanifest`     |
+| Icon generation without added dependencies    | `make_icons.py`            |
+
+
+<!-- @trace
+source: add-mobile-remote-control
+updated: 2026-09-07
+code:
+  - docs/系統架構設計圖.md
+  - static/manifest.webmanifest
+  - docs/主要功能程式碼介紹.md
+  - static/icons/app-icon-512.png
+  - tools/make_icons.py
+  - templates/index.html
+  - static/icons/app-icon-180.png
+  - app.py
+  - docs/專案簡介.md
+  - static/css/style.css
+-->
 
 ---
 ### Requirement: Documentation states nothing that contradicts the implementation
@@ -99,7 +128,9 @@ Behaviour that changes as features evolve SHALL be described by naming the respo
 
 The architecture documentation SHALL contain a data-flow diagram for the multi-waypoint sequential walk that is separate from the single-destination road walk diagram. The multi-waypoint diagram SHALL NOT include an external routing service as a participant, because that path takes coordinates directly from user input and never contacts one.
 
-The layered architecture SHALL list the control panel and the multi-waypoint sequential walk in the presentation layer. The key design decisions table SHALL record the six decisions established by the three most recent changes.
+The layered architecture SHALL list the control panel, the multi-waypoint sequential walk, and the connection diagnostics in the presentation layer.
+
+The key design decisions table SHALL record every decision named in the decisions table below. The decisions are named individually rather than by referring to "the most recent changes", because the set that phrase denotes changes every time a change is archived, and the same sentence then demands different content at different times without anyone editing it.
 
 #### Scenario: The multi-waypoint path has its own diagram
 
@@ -110,9 +141,35 @@ The layered architecture SHALL list the control panel and the multi-waypoint seq
 #### Scenario: Recent design decisions are recorded
 
 - **WHEN** the key design decisions table is read
-- **THEN** it records dropping overlapping writes rather than queueing them
-- **AND** it records the route endpoints being named exceptions to that dropping rule
-- **AND** it records the write completion callback identifying its walk by generation
-- **AND** it records the three-state device write outcome
-- **AND** it records third-party library failure having to be visible on the page
-- **AND** it records walk input validation preceding the start of the worker
+- **THEN** it records every decision named in the required decisions table
+
+##### Example: required decisions table
+
+| Decision that SHALL be recorded                                                  |
+| -------------------------------------------------------------------------------- |
+| Overlapping device writes are dropped rather than queued                          |
+| The route's first and final coordinates are named exceptions to that dropping rule |
+| The write completion callback identifies its walk by generation                   |
+| The device write outcome is three-state rather than boolean                        |
+| A third-party library failure has to be visible on the page                       |
+| Walk input validation precedes the start of the worker                            |
+| Diagnostics probes in ordered stages, each carrying its own next action           |
+| Diagnostics reuses the shared device connection instead of opening a parallel one |
+| The narrow viewport uses a bottom sheet rather than a narrowed left overlay        |
+| Icons are generated with the standard library rather than by adding an image dependency |
+
+<!-- @trace
+source: add-mobile-remote-control
+updated: 2026-09-07
+code:
+  - docs/系統架構設計圖.md
+  - static/manifest.webmanifest
+  - docs/主要功能程式碼介紹.md
+  - static/icons/app-icon-512.png
+  - tools/make_icons.py
+  - templates/index.html
+  - static/icons/app-icon-180.png
+  - app.py
+  - docs/專案簡介.md
+  - static/css/style.css
+-->
