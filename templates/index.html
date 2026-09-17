@@ -64,7 +64,7 @@
             <section class="panel-section">
                 <h2 class="section-title">多座標依序移動</h2>
                 <label class="coord-hint" for="coordInput">每行一組：緯度, 經度</label>
-                <textarea id="coordInput" spellcheck="false"
+                <textarea id="coordInput" spellcheck="false" oninput="updateRoutePreview()"
 placeholder="25.033964, 121.564468
 25.041000, 121.565000
 25.047924, 121.517081"></textarea>
@@ -495,6 +495,99 @@ placeholder="25.033964, 121.564468
         function updateWalkSpeed() {
             walkSpeedKmh = parseInt(document.getElementById('walkSpeedSlider').value);
             document.getElementById('walkSpeedValue').textContent = walkSpeedKmh + ' km/h';
+            // 預覽的時間依速度而定，速度一變就要跟著重算。
+            updateRoutePreview();
+        }
+
+        // === 走完所需時間 ===
+
+        // 後端 _haversine 的前端對應，地球半徑與公式必須一致 —— 顯示的時間是「走路
+        // 引擎真的要走的距離除以速度」，兩邊各用一套距離公式，這個等式就不再成立。
+        function haversineMeters(lat1, lng1, lat2, lng2) {
+            var R = 6371000;
+            var toRad = function (deg) { return deg * Math.PI / 180; };
+            var dLat = toRad(lat2 - lat1);
+            var dLng = toRad(lng2 - lng1);
+            var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        // 路線總長 = 相鄰座標的直線距離總和。刻意不使用路線規劃服務回傳的 distance
+        // 欄位：那是路網長度，而走路引擎是在回傳的折線點之間直線插值前進的。
+        function routeLengthMeters(coords) {
+            if (!coords || coords.length < 2) return 0;
+            var total = 0;
+            for (var i = 0; i < coords.length - 1; i++) {
+                total += haversineMeters(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1]);
+            }
+            return total;
+        }
+
+        // 未滿 1000 公尺以整數公尺顯示，1000 公尺以上以公里顯示到小數一位。先四捨五入
+        // 再判斷量級，999.6 公尺才不會顯示成「1000 公尺」。
+        function formatDistance(meters) {
+            var m = Math.round(meters);
+            if (m < 1000) return m + ' 公尺';
+            return (m / 1000).toFixed(1) + ' 公里';
+        }
+
+        // 先四捨五入成整數秒，再依量級選格式。小時量級捨去秒 —— 走路迴圈在機器忙碌時
+        // 會落後標稱速度，在一小時的尺度上標出秒數是宣稱這個功能沒有的精確度。
+        function formatDuration(seconds) {
+            var s = Math.round(seconds);
+            if (s < 60) return s + ' 秒';
+            if (s < 3600) {
+                var m = Math.floor(s / 60);
+                var rest = s % 60;
+                return rest === 0 ? m + ' 分' : m + ' 分 ' + rest + ' 秒';
+            }
+            var h = Math.floor(s / 3600);
+            var hm = Math.floor((s % 3600) / 60);
+            return hm === 0 ? h + ' 小時' : h + ' 小時 ' + hm + ' 分';
+        }
+
+        // 剩餘距離 = 目前位置到下一個尚未抵達的座標，加上其後每一段線段。reachedIndex
+        // 是走路狀態回報的「已抵達座標索引」（0 起算），指向最後一點時代表已經走完。
+        function remainingMeters(coords, reachedIndex, lat, lng) {
+            if (!coords || reachedIndex < 0 || reachedIndex >= coords.length - 1) return 0;
+            var total = haversineMeters(lat, lng, coords[reachedIndex + 1][0], coords[reachedIndex + 1][1]);
+            for (var i = reachedIndex + 1; i < coords.length - 1; i++) {
+                total += haversineMeters(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1]);
+            }
+            return total;
+        }
+
+        // 走路進行中的剩餘秒數。速度取走路狀態回報的 speed_kmh，不取滑桿的
+        // walkSpeedKmh —— 速度在走路開始的當下就凍結進後端狀態，移動中拖滑桿不影響
+        // 正在跑的這一輪，用滑桿值會讓畫面上的倒數與裝置實際行為脫節，而且不會有
+        // 任何錯誤訊息。路線為空或狀態缺欄位時回傳 null，由呼叫端決定保留原文字。
+        function walkRemainingSeconds(coords, st) {
+            if (!coords || coords.length < 2 || !st) return null;
+            if (!Number.isFinite(st.progress) || !Number.isFinite(st.lat) || !Number.isFinite(st.lng)) return null;
+            if (!Number.isFinite(st.speed_kmh) || st.speed_kmh <= 0) return null;
+            return remainingMeters(coords, st.progress, st.lat, st.lng) / (st.speed_kmh * 1000 / 3600);
+        }
+
+        // 開始移動前的預覽。走路進行中一律不寫入 —— 那時這個元素歸輪詢所有，預覽會
+        // 把倒數蓋掉。使用者在移動中拖動速度滑桿，正是會走到這裡的那條路徑。
+        // 判斷依據用 walkInterval 而不是 multiWalkActive：單點沿路移動中的
+        // multiWalkActive 為否，但它的倒數同樣不該被預覽覆寫。
+        function updateRoutePreview() {
+            var el = document.getElementById('walkProgress');
+            if (walkInterval) return;
+
+            // 讀輸入框的當下內容而不是 multiCoords —— 後者要到 startMultiWalk()
+            // 才會被填值，開始移動前恆為空陣列。
+            var parsed = parseCoordInput(document.getElementById('coordInput').value);
+            if (parsed.error) {
+                el.textContent = '';
+                return;
+            }
+
+            var meters = routeLengthMeters(parsed.coords);
+            el.textContent = '全長 ' + formatDistance(meters)
+                + ' · 約 ' + formatDuration(meters / (walkSpeedKmh * 1000 / 3600));
         }
 
         // === Multi-coordinate sequential walk ===
@@ -728,16 +821,31 @@ placeholder="25.033964, 121.564468
                         updateDisplay();
                         if (multiWalkActive) {
                             // st.progress 是已抵達的座標索引（0 起算），顯示為第 N 點。
+                            var secs = walkRemainingSeconds(multiCoords, st);
                             document.getElementById('walkProgress').textContent =
-                                '第 ' + (st.progress + 1) + ' 點／共 ' + st.total + ' 點';
+                                '第 ' + (st.progress + 1) + ' 點／共 ' + st.total + ' 點'
+                                + (secs === null ? '' : ' · 剩餘 ' + formatDuration(secs));
+                        } else {
+                            // 單點沿路：路線來自路線規劃服務，沒有使用者編號的座標，
+                            // 所以只顯示剩餘時間、不加「第 N 點」前綴。倒數的第一個值
+                            // 就等於這條路線的總時間 —— 這條路徑沒有「開始之前」可以
+                            // 預覽的時刻，路線是按下按鈕之後才取得的。
+                            var roadSecs = walkRemainingSeconds(routeCoords, st);
+                            if (roadSecs !== null) {
+                                document.getElementById('walkProgress').textContent =
+                                    '剩餘 ' + formatDuration(roadSecs);
+                            }
                         }
                     } else {
                         // 走路自然結束。終點狀態存在的時間短於 500ms 的輪詢週期，
                         // 只在 active 為真時更新進度，使用者幾乎永遠看不到終點那一格
                         // ——「第 3 點／共 3 點」會在被讀到之前就變成未移動。這裡在
                         // 收尾之前先用最後一次讀到的狀態把進度補上並保留。
-                        // multiWalkActive 為否表示不是多座標移動（單點沿路沒有進度
-                        // 顯示），或使用者已經按過停止（那時進度該清空）。
+                        // multiWalkActive 為否表示不是多座標移動（單點沿路移動中雖然
+                        // 會顯示剩餘時間，但走完就沒有座標索引可留），或使用者已經按過
+                        // 停止（那時進度該清空）。
+                        // 保留的文字刻意只有座標索引、不含剩餘時間 ——「剩餘 0 秒」沒有
+                        // 資訊量，而走完之後留著一個倒數讀數只會讓人以為還在走。
                         var finalProgress = (multiWalkActive && st.total)
                             ? '第 ' + (st.progress + 1) + ' 點／共 ' + st.total + ' 點'
                             : '';

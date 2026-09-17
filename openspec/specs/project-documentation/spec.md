@@ -69,22 +69,21 @@ When a change adds a feature, it SHALL add that feature to the coverage table in
 | Minimum touch target size                     | 44 CSS 像素                 |
 | Home screen install manifest                  | `manifest.webmanifest`     |
 | Icon generation without added dependencies    | `make_icons.py`            |
+| Route length and duration preview             | `updateRoutePreview`       |
+| Remaining time while a walk runs              | `remainingMeters`          |
 
 
 <!-- @trace
-source: add-mobile-remote-control
-updated: 2026-09-07
+source: add-walk-duration-display
+updated: 2026-09-17
 code:
-  - docs/系統架構設計圖.md
+  - static/icons/app-icon-180.png
   - static/manifest.webmanifest
   - docs/主要功能程式碼介紹.md
-  - static/icons/app-icon-512.png
-  - tools/make_icons.py
   - templates/index.html
-  - static/icons/app-icon-180.png
-  - app.py
   - docs/專案簡介.md
-  - static/css/style.css
+  - tools/make_icons.py
+  - static/icons/app-icon-512.png
 -->
 
 ---
