@@ -73,17 +73,20 @@ When a change adds a feature, it SHALL add that feature to the coverage table in
 | Device identity in the status bar             | `renderDeviceStatus`       |
 | Model names for every listed device           | `_device_models`           |
 | Identity poll kept out of the access log      | `_mute_poll_access_log`    |
+| Personal Hotspot address caveat               | `_hotspot_address_hint`    |
 | Route length and duration preview             | `updateRoutePreview`       |
 | Remaining time while a walk runs              | `remainingMeters`          |
 
 
 <!-- @trace
-source: add-device-identity-display
+source: warn-hotspot-address
 updated: 2026-09-18
 code:
+  - CLAUDE.md
   - app.py
   - templates/index.html
   - docs/主要功能程式碼介紹.md
+  - .spectra.yaml
 -->
 
 ---

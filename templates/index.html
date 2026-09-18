@@ -1037,6 +1037,22 @@ placeholder="25.033964, 121.564468
             }
             box.appendChild(addr);
 
+            // 位址落在個人熱點網段時，後端會附上警示與後續動作。沿用階段的細節與
+            // 後續動作樣式，位址這一行因此與四個階段講同一種話：這是細節、這是
+            // 下一步。欄位缺席時不產生節點，也不留空行。
+            if (server.host && server.caveat) {
+                var ac = document.createElement('div');
+                ac.className = 'diag-detail';
+                ac.textContent = server.caveat;
+                box.appendChild(ac);
+            }
+            if (server.host && server.next_action) {
+                var an = document.createElement('div');
+                an.className = 'diag-next';
+                an.textContent = '→ ' + server.next_action;
+                box.appendChild(an);
+            }
+
             var devs = data.devices || [];
             var dl = document.createElement('div');
             dl.className = 'diag-devices';

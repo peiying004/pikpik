@@ -298,6 +298,41 @@ def _default_route_address():
     finally:
         sock.close()
 
+
+# iOS 個人熱點固定使用的網段（閘道 .1，遮罩 255.255.255.240）。Mac 拿到這個網段的
+# 位址就表示它是某支手機熱點的用戶端，而熱點主機不路由到自己的用戶端——「手機請連
+# 這個網址」那句話對提供熱點的那支手機必然失敗。
+_HOTSPOT_PREFIX = "172.20.10."
+_HOTSPOT_HOST_MAX = 15
+
+# 措辭只陳述網段這個事實，不斷言使用者的網路拓撲。某台路由器剛好用同一個私有網段
+# 並非不可能，此時「這個位址屬於那個網段」仍然為真、只是把線索交給使用者判斷，而
+# 「你正在使用個人熱點」會變成一句錯話。判定因此只看位址、不必去讀預設閘道。
+_HOTSPOT_CAVEAT = (
+    "這個位址屬於 iPhone 個人熱點的網段。若這台 Mac 正連著手機的個人熱點，"
+    "提供熱點的那支手機連不到熱點裡的用戶端，這個位址在它上面打不開。"
+)
+_HOTSPOT_NEXT_ACTION = "讓 Mac 與手機一起連到一般的 Wi-Fi 路由器。"
+
+
+def _hotspot_address_hint(host):
+    """位址落在個人熱點網段時，回傳（警示, 後續動作）；否則回傳 None。
+
+    判定只比對手上這個位址的前綴，不執行系統指令去讀預設閘道——讀閘道要解析外部
+    指令的輸出，那是一個會隨作業系統版本改變的介面，而它換來的精度由措辭本身就
+    已經承擔（見 _HOTSPOT_CAVEAT）。
+
+    最後一段必須是 0 到 15 的數字：遮罩是 255.255.255.240，所以 172.20.10.16 起
+    已經是另一個網段。取不到位址（空字串）時同樣不提示。
+    """
+    if not host or not host.startswith(_HOTSPOT_PREFIX):
+        return None
+    last = host[len(_HOTSPOT_PREFIX):]
+    if not last.isdigit() or int(last) > _HOTSPOT_HOST_MAX:
+        return None
+    return _HOTSPOT_CAVEAT, _HOTSPOT_NEXT_ACTION
+
+
 # 四個階段的固定順序、顯示名稱與失敗時的後續動作。四筆後續動作文字互不相同：
 # 每一種失敗要做的事都不一樣，而把它們壓成同一句正是這個端點要修掉的缺陷。
 _DIAG_STAGE_META = [
@@ -476,13 +511,23 @@ def _diag_response(results, devices):
 
     伺服器位址與階段結果一起回報，因為「我手機該連哪個網址」和「連線鏈通不通」
     是同一個問題的兩半。位址取不到時為空字串，不影響其餘輸出。
+
+    位址落在個人熱點網段時，另外附上警示與後續動作兩個欄位。位址本身照舊回報、
+    不隱藏也不改寫——熱點下若還有第三台裝置，那個位址對它仍然有效；這兩個欄位是
+    附加在位址旁邊的說明，不是位址的替代品。不適用時欄位缺席而不是空字串，讓
+    「沒有話要說」與「有一句空話」在前端一眼可辨。
     """
+    host = _default_route_address()
+    server = {"host": host, "port": _SERVER_PORT}
+    hint = _hotspot_address_hint(host)
+    if hint:
+        server["caveat"], server["next_action"] = hint
     return jsonify({
         "stages": _diag_build(results),
         # 標註排在組裝回應的這一刻，而不是解析之後：階段三的連線探測會更新機型
         # 對照與連線身分，早於它標註就會漏掉這一輪才問到的機型。
         "devices": _annotate_device_models(devices),
-        "server": {"host": _default_route_address(), "port": _SERVER_PORT},
+        "server": server,
     })
 
 
